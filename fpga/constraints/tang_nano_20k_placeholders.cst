@@ -1,0 +1,9 @@
+// Tang Nano 20K constraint placeholder.
+//
+// Do not add guessed PIN locations here. Verify the exact Tang Nano 20K
+// schematic/board revision and Gowin device configuration first, then map:
+//   clk, reset_n, spi_clk, spi_cs_n, spi_mosi, spi_miso
+// using the authoritative board documentation.
+//
+// Example syntax is intentionally omitted so this file cannot be mistaken for
+// a verified programming constraint.

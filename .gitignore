@@ -1,0 +1,6 @@
+fpga/build/
+host/build/
+host/*.exe
+*.vvp
+*.vcd
+__pycache__/

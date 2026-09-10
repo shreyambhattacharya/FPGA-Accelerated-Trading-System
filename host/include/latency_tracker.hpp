@@ -28,6 +28,8 @@ struct LatencySummary {
     std::uint64_t p95_ns = 0;
     std::uint64_t p99_ns = 0;
     std::uint64_t sequence_errors = 0;
+    std::uint64_t elapsed_ns = 0;
+    double effective_packets_per_second = 0.0;
 };
 
 class LatencyTracker {

@@ -2,36 +2,35 @@
 
 `include "protocol_defs.svh"
 
-// Packet-level processing stage. It consumes one RX FIFO packet only when the
-// TX FIFO can accept the generated response, keeping backpressure explicit.
+// Synchronous packet-processing stage in the 27 MHz system-clock domain.
+// The response register provides one packet of backpressure between the
+// asynchronous RX and TX FIFOs.
 module loopback_engine (
+    input  wire                    clk,
+    input  wire                    reset_n,
     input  wire                    packet_valid,
     output wire                    packet_ready,
     input  wire [`PACKET_BITS-1:0] packet_in,
     input  wire                    response_ready,
-    output wire                    response_wr_en,
-    output wire [`PACKET_BITS-1:0] response_packet,
-    output wire                    packet_error
+    output wire                    response_valid,
+    output reg  [`PACKET_BITS-1:0] response_packet,
+    output reg                     packet_error_pulse
 );
-    wire good_sync;
-    wire good_crc;
-    wire good_type;
-    wire accepted;
+    reg response_valid_reg;
+    wire packet_is_filler = (packet_in == {`PACKET_BITS{1'b0}});
+    wire accepted = packet_valid && packet_ready;
 
-    assign good_sync = (packet_byte(packet_in, 0) == `PROTOCOL_SYNC_VERSION);
-    assign good_crc  = (packet_byte(packet_in, 31) == crc8_packet(packet_in));
-    assign good_type = (packet_byte(packet_in, 1) == `MSG_LOOPBACK);
-
-    assign packet_ready = response_ready;
-    assign accepted = packet_valid && response_ready;
-    assign response_wr_en = accepted;
-    assign packet_error = accepted && !(good_sync && good_crc && good_type);
+    // The host uses all-zero clocking packets for the turnaround and response
+    // transfers. They are deliberately consumed without generating a status
+    // packet or error, so the three-transfer protocol does not fill the TX
+    // FIFO with responses to its own dummy clocks.
+    assign packet_ready = packet_is_filler || !response_valid_reg || response_ready;
+    assign response_valid = response_valid_reg;
 
     function automatic [`PACKET_BITS-1:0] make_response(input [`PACKET_BITS-1:0] request);
         reg [`PACKET_BITS-1:0] response;
         reg [7:0] status;
         reg [15:0] response_flags;
-        integer i;
         begin
             response = request;
             response = set_packet_byte(response, 0, `PROTOCOL_SYNC_VERSION);
@@ -60,5 +59,22 @@ module loopback_engine (
         end
     endfunction
 
-    assign response_packet = make_response(packet_in);
+    always @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            response_valid_reg <= 1'b0;
+            response_packet <= {`PACKET_BITS{1'b0}};
+            packet_error_pulse <= 1'b0;
+        end else begin
+            packet_error_pulse <= 1'b0;
+            if (response_valid_reg && response_ready) response_valid_reg <= 1'b0;
+            if (accepted && !packet_is_filler) begin
+                response_packet <= make_response(packet_in);
+                response_valid_reg <= 1'b1;
+                packet_error_pulse <=
+                    (packet_byte(packet_in, 0) != `PROTOCOL_SYNC_VERSION) ||
+                    (packet_byte(packet_in, 31) != crc8_packet(packet_in)) ||
+                    (packet_byte(packet_in, 1) != `MSG_LOOPBACK);
+            end
+        end
+    end
 endmodule

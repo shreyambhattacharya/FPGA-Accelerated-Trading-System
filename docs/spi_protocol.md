@@ -6,6 +6,8 @@ The transport is SPI mode 0: CPOL=0 and CPHA=0. The Raspberry Pi is master, the 
 
 The first request/response exchange uses three transfers: request, turnaround, response. The turnaround transfer is intentionally explicit because a slave cannot send a complete response that depends on the final request byte until that byte has arrived and passed through the RX FIFO and loopback logic.
 
+The turnaround and response transfers clock all-zero 32-byte filler packets. The FPGA consumes an all-zero packet as a transport filler and does not generate a status response or count it as a packet error. An all-zero packet is therefore reserved for clocking and is not a valid application request.
+
 ## Packet layout
 
 All multi-byte fields are unsigned unless noted and are transmitted most-significant byte first (big-endian/network order).

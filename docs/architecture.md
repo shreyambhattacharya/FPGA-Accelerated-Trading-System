@@ -21,7 +21,9 @@ The FPGA is the deterministic data-plane accelerator. In later stages it will up
 
 ## Clocking note
 
-The first RTL proof keeps packet FIFOs and loopback processing in the SPI clock domain. This avoids silently introducing an unsafe clock-domain crossing while the packet semantics are being verified. The top-level `clk` port is reserved for the continuously running FPGA clock and future control/status logic. A later hardening stage should replace the packet FIFOs with an explicitly verified dual-clock FIFO or a request/response CDC bridge before a continuously running system clock is used for the market pipeline.
+The Tang Nano's onboard 27 MHz oscillator (`clk`, physical pin 4) is the system clock. SPI framing and bit shifting remain in the external `spi_clk` domain. RX and TX packet movement crosses the boundary through independent Gray-pointer asynchronous FIFOs, with two-flop synchronizers for each pointer. Packet validation and response generation therefore run synchronously at 27 MHz; no raw SPI-clock signal is used as the processing clock.
+
+The shared power-on reset is generated from the 27 MHz clock and does not require a Raspberry Pi reset wire. SPI-domain state also has FPGA configuration-time reset values so the design is safe while the Pi holds SCLK idle during FPGA power-up. The async FIFO testbench intentionally uses unrelated clocks and checks ordering, full/empty behavior, overflow/underflow counters, and reset while traffic is resident.
 
 This is a deliberate first-milestone tradeoff, not a claim that a raw SPI clock is the final system clock architecture.
 
@@ -35,14 +37,16 @@ CS is a packet frame boundary. Every transaction clocks exactly 32 bytes. The re
 
 The host checks the response packet's CRC, type, status, and sequence. A missing or zero response is an error, not a successful loopback.
 
+The all-zero 32-byte turnaround and response writes are transport filler used to provide clock edges. The FPGA accepts filler without creating a status response or packet-error event; nonzero packets enter the normal protocol validator.
+
 ## Physical interface
 
-| Raspberry Pi 5 signal | Tang Nano signal | Direction |
+| Raspberry Pi 5 signal | Tang Nano 20K signal | Direction |
 | --- | --- | --- |
-| MOSI | FPGA MOSI input | Pi → FPGA |
-| MISO | FPGA MISO output | FPGA → Pi |
-| SCLK | FPGA SPI clock input | Pi → FPGA |
-| CE0 / chip select | FPGA CS input | Pi → FPGA |
+| GPIO10 / physical pin 19, MOSI | `spi_mosi`, FPGA pin 27 | Pi → FPGA |
+| GPIO9 / physical pin 21, MISO | `spi_miso`, FPGA pin 28 | FPGA → Pi |
+| GPIO11 / physical pin 23, SCLK | `spi_clk`, FPGA pin 25 | Pi → FPGA |
+| GPIO8 / physical pin 24, CE0 | `spi_cs_n`, FPGA pin 26 | Pi → FPGA |
 | GND | GND | reference |
 
-Use the Pi's normal 3.3 V GPIO SPI signals and a common ground. Do not connect until the Tang Nano 20K board-specific pins have been confirmed from authoritative board documentation. No pin numbers are guessed in this repository; see `fpga/constraints/tang_nano_20k_placeholders.cst`.
+The onboard 27 MHz oscillator is constrained as `clk` on FPGA pin 4. LED0–LED5 use FPGA pins 15–20 and are active-low; LED0 is a heartbeat, LED1 is packet activity, and LED2 is a sticky packet/protocol error. The LCD/FPC connector must remain disconnected for this external SPI wiring. Use the Pi's normal 3.3 V GPIO SPI signals and a common ground; do not connect Pi 5 V or Pi 3.3 V to the USB-powered Tang Nano. See `docs/hardware_bringup.md` and `fpga/constraints/tang_nano_20k.cst` for the checked-in bring-up assumptions.

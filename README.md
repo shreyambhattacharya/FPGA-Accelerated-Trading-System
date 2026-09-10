@@ -11,12 +11,12 @@ The first milestone proves the data-plane foundation:
 ```text
 Pi SPI master
   -> 32-byte request transfer
-Tang Nano SPI slave -> RX packet FIFO -> loopback validator -> TX packet FIFO
+Tang Nano SPI slave -> SPI-domain RX FIFO -> 27 MHz loopback validator -> SPI-domain TX FIFO
   <- turnaround transfer clocks the pipeline
   <- response transfer returns a validated status packet
 ```
 
-The packet format is fixed at 32 bytes, uses big-endian integer fields, and ends with CRC-8/ATM. The RTL is written in synthesizable SystemVerilog. The host side is modern C++17 and uses Linux `spidev` when built and run on Raspberry Pi OS. A deterministic software transport is included so protocol and benchmark plumbing can be exercised on a development PC without pretending that physical SPI was tested.
+The packet format is fixed at 32 bytes, uses big-endian integer fields, and ends with CRC-8/ATM. The RTL is written in synthesizable SystemVerilog. The packet FIFOs are Gray-pointer asynchronous FIFOs with two-flop pointer synchronizers; SPI framing remains in the external SPI clock domain while validation and response generation run on the Tang Nano's onboard 27 MHz clock. The host side is modern C++17 and uses Linux `spidev` when built and run on Raspberry Pi OS. A deterministic software transport is included so protocol and benchmark plumbing can be exercised on a development PC without pretending that physical SPI was tested.
 
 ## Responsibilities and rationale
 
@@ -28,9 +28,10 @@ The FPGA does not parse JSON, TLS, TCP, or WebSocket framing. It is being used f
 
 ```text
 docs/                         Architecture, protocol, arithmetic, verification, benchmarks
-fpga/rtl/                     SPI slave, packet FIFO, protocol and loopback RTL
+fpga/rtl/                     SPI slave, CDC FIFOs, reset, protocol and loopback RTL
 fpga/tb/                      Self-checking RTL testbench
-fpga/constraints/             Explicitly unverified Tang Nano pin placeholders
+fpga/constraints/             Tang Nano 20K CST pin assignments and timing constraints
+fpga/gowin/                   Gowin project file for GW2AR-18C
 fpga/scripts/                 Local simulation helper
 host/include/                 C++ protocol and transport interfaces
 host/src/                     Linux SPI and software-loopback implementations
@@ -58,7 +59,7 @@ g++ -std=c++17 -Wall -Wextra -Wpedantic -O2 -I host/include `
 .\host\loopback_test.exe --sim --count 1000
 ```
 
-For physical Pi use, run the same program with `--device /dev/spidev0.0` after enabling SPI and wiring the verified signals. The program does not claim hardware success merely because it compiled.
+For physical Pi use, follow [`docs/hardware_bringup.md`](docs/hardware_bringup.md), then run the same program with `--device /dev/spidev0.0`. The program prints `mode=REAL_HARDWARE` only on the spidev path; `--sim` is explicitly labeled `mode=SIMULATION`. Its throughput is an end-to-end exchange rate over the measured run, not a claim about FPGA service time.
 
 ## Run RTL simulation
 
@@ -68,19 +69,19 @@ With Icarus Verilog installed:
 .\fpga\scripts\run_iverilog.ps1
 ```
 
-The script compiles the RTL and self-checking testbench into a temporary build directory and runs it with `vvp`. The testbench covers reset, valid loopback, sequential packets, checksum rejection, incomplete frames, and FIFO backpressure/overflow visibility.
+The script compiles the RTL and self-checking testbenches into a local build directory and runs them with `vvp`. The checks cover reset, valid loopback, sequential packets, checksum rejection, incomplete frames, mode-0 response timing, FIFO backpressure/overflow visibility, and a 64-packet async FIFO stress test with unrelated clocks.
 
 ## Hardware still required
 
 Physical validation still requires:
 
 1. A Tang Nano 20K bitstream built with the board's actual device/toolchain settings.
-2. Pin assignments checked against the Tang Nano 20K schematic or board documentation. This repository deliberately does not guess them.
+2. The checked-in `fpga/constraints/tang_nano_20k.cst` reviewed against the Tang Nano 20K board documentation and the intended external SPI header wiring.
 3. Safe 3.3 V-compatible connections and a shared ground between the Pi and FPGA.
 4. SPI enabled on Raspberry Pi OS, with mode 0 and an initial 5 MHz clock.
 5. A logic analyzer or oscilloscope if signal-integrity or clock-rate limits need investigation.
 
-The exact wiring signal names are documented in `docs/architecture.md`; the board-specific constraint file is intentionally a placeholder.
+The exact wiring, power precautions, Gowin IDE flow, and Raspberry Pi commands are documented in `docs/hardware_bringup.md`. No physical bitstream download or Pi↔FPGA test has been claimed from this development environment.
 
 ## Roadmap
 

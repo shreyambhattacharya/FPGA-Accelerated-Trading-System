@@ -33,6 +33,14 @@ LatencySummary LatencyTracker::summary() const {
     result.packets_returned = durations.size();
     result.failures = result.packets_sent - result.packets_returned;
     result.sequence_errors = sequence_errors_;
+    if (!samples_.empty() && samples_.back().receive_ns >= samples_.front().send_ns) {
+        result.elapsed_ns = samples_.back().receive_ns - samples_.front().send_ns;
+        if (result.elapsed_ns != 0) {
+            result.effective_packets_per_second =
+                static_cast<double>(result.packets_returned) * 1'000'000'000.0 /
+                static_cast<double>(result.elapsed_ns);
+        }
+    }
     for (const auto& sample : samples_) {
         if (sample.success) continue;
         if (sample.failure.find("missing") != std::string::npos) {

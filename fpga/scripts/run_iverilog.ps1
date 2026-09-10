@@ -5,6 +5,8 @@ $buildDir = Join-Path $repoRoot 'fpga\build'
 New-Item -ItemType Directory -Force $buildDir | Out-Null
 
 $sources = @(
+    (Join-Path $repoRoot 'fpga\rtl\reset\power_on_reset.sv'),
+    (Join-Path $repoRoot 'fpga\rtl\fifo\async_packet_fifo.sv'),
     (Join-Path $repoRoot 'fpga\rtl\fifo\packet_fifo.sv'),
     (Join-Path $repoRoot 'fpga\rtl\spi\spi_slave.sv'),
     (Join-Path $repoRoot 'fpga\rtl\protocol\loopback_engine.sv'),
@@ -27,3 +29,12 @@ if ($LASTEXITCODE -ne 0) { throw "FIFO simulation compilation failed" }
 
 vvp $fifoOutput
 if ($LASTEXITCODE -ne 0) { throw "FIFO simulation failed" }
+
+$asyncOutput = Join-Path $buildDir 'tb_async_packet_fifo.vvp'
+iverilog -g2012 -Wall -I (Join-Path $repoRoot 'fpga\rtl\protocol') -s tb_async_packet_fifo -o $asyncOutput `
+    (Join-Path $repoRoot 'fpga\rtl\fifo\async_packet_fifo.sv') `
+    (Join-Path $repoRoot 'fpga\tb\tb_async_packet_fifo.sv')
+if ($LASTEXITCODE -ne 0) { throw "Async FIFO simulation compilation failed" }
+
+vvp $asyncOutput
+if ($LASTEXITCODE -ne 0) { throw "Async FIFO simulation failed" }

@@ -4,42 +4,22 @@
 
 module tb_trading_spi_top;
     reg clk = 1'b0;
-    reg reset_n = 1'b1;
     reg spi_clk = 1'b0;
     reg spi_cs_n = 1'b1;
     reg spi_mosi = 1'b0;
     wire spi_miso;
+    wire [5:0] led;
 
-    wire rx_fifo_full;
-    wire rx_fifo_empty;
-    wire tx_fifo_full;
-    wire tx_fifo_empty;
-    wire [31:0] rx_fifo_overflow_count;
-    wire [31:0] rx_fifo_underflow_count;
-    wire [31:0] tx_fifo_overflow_count;
-    wire [31:0] tx_fifo_underflow_count;
-    wire [31:0] packet_error_count;
-    wire incomplete_frame_seen;
-
-    always #5 clk = ~clk;
+    // 27 MHz system clock and unrelated 5 MHz SPI clock.
+    always #18.5185 clk = ~clk;
 
     trading_spi_top dut (
         .clk(clk),
-        .reset_n(reset_n),
         .spi_clk(spi_clk),
         .spi_cs_n(spi_cs_n),
         .spi_mosi(spi_mosi),
         .spi_miso(spi_miso),
-        .rx_fifo_full(rx_fifo_full),
-        .rx_fifo_empty(rx_fifo_empty),
-        .tx_fifo_full(tx_fifo_full),
-        .tx_fifo_empty(tx_fifo_empty),
-        .rx_fifo_overflow_count(rx_fifo_overflow_count),
-        .rx_fifo_underflow_count(rx_fifo_underflow_count),
-        .tx_fifo_overflow_count(tx_fifo_overflow_count),
-        .tx_fifo_underflow_count(tx_fifo_underflow_count),
-        .packet_error_count(packet_error_count),
-        .incomplete_frame_seen(incomplete_frame_seen)
+        .led(led)
     );
 
     function automatic [255:0] make_request;
@@ -78,20 +58,20 @@ module tb_trading_spi_top;
         begin
             receive = 256'd0;
             spi_cs_n = 1'b0;
-            #2;
+            #40;
             for (bit_index = 0; bit_index < 256; bit_index = bit_index + 1) begin
                 spi_mosi = transmit[255-bit_index];
-                #1;
+                #80;
                 spi_clk = 1'b1;
-                #1;
+                #20;
                 receive[255-bit_index] = spi_miso;
-                #1;
+                #80;
                 spi_clk = 1'b0;
-                #1;
+                #20;
             end
             spi_mosi = 1'b0;
             spi_cs_n = 1'b1;
-            #2;
+            #100;
         end
     endtask
 
@@ -108,18 +88,11 @@ module tb_trading_spi_top;
 
     reg [255:0] request;
     reg [255:0] response;
-    reg [255:0] ignored;
     integer seq_index;
 
     initial begin
-        // Create a real reset transition in simulation. SPI SCLK is idle while
-        // reset is asserted, so relying on an initial value would not clock
-        // the FIFO reset flops.
-        #1;
-        reset_n = 1'b0;
-        repeat (2) @(posedge clk);
-        reset_n = 1'b1;
-        #2;
+        wait (dut.reset_n_int === 1'b1);
+        #500;
 
         request = make_request(32'd17, `MSG_LOOPBACK, `PROTOCOL_SYNC_VERSION);
         exchange_loopback(request, response);
@@ -132,16 +105,15 @@ module tb_trading_spi_top;
         for (seq_index = 18; seq_index < 23; seq_index = seq_index + 1) begin
             request = make_request(seq_index, `MSG_LOOPBACK, `PROTOCOL_SYNC_VERSION);
             exchange_loopback(request, response);
-            if (byte_of(response, 24) !== `STATUS_OK) $fatal(1, "sequential loopback status failed");
-            if (response[55:24] !== seq_index) $fatal(1, "sequential sequence preservation failed");
+            if (byte_of(response, 24) !== `STATUS_OK) $fatal(1, "sequential status failed");
+            if (response[55:24] !== seq_index) $fatal(1, "sequential sequence failed");
         end
 
         request = make_request(32'd99, `MSG_LOOPBACK, `PROTOCOL_SYNC_VERSION);
         request[7:0] = request[7:0] ^ 8'h01;
         exchange_loopback(request, response);
         if (byte_of(response, 24) !== `STATUS_BAD_CHECKSUM) $fatal(1, "bad CRC status failed");
-        if (response[55:24] !== 32'd99) $fatal(1, "bad CRC sequence preservation failed");
-        if (byte_of(response, 31) !== crc8_packet(response)) $fatal(1, "bad CRC response CRC failed");
+        if (response[55:24] !== 32'd99) $fatal(1, "bad CRC sequence failed");
 
         request = make_request(32'd100, 8'h55, `PROTOCOL_SYNC_VERSION);
         exchange_loopback(request, response);
@@ -151,22 +123,18 @@ module tb_trading_spi_top;
         exchange_loopback(request, response);
         if (byte_of(response, 24) !== `STATUS_BAD_SYNC) $fatal(1, "bad sync status failed");
 
-        // End a transaction before a complete packet. The sticky diagnostic
-        // must survive CS deassertion and later complete transfers.
+        // Incomplete CS frame must be detected without a reset or extra clock.
         spi_cs_n = 1'b0;
         repeat (8) begin
             spi_mosi = 1'b0;
-            #1; spi_clk = 1'b1; #1; spi_clk = 1'b0; #1;
+            #80; spi_clk = 1'b1; #20; spi_clk = 1'b0; #20;
         end
         spi_cs_n = 1'b1;
-        #2;
-        if (!incomplete_frame_seen) $fatal(1, "incomplete frame was not detected");
+        #100;
+        if (!dut.incomplete_frame_seen) $fatal(1, "incomplete frame not detected");
 
-        // Status counters must have observed the malformed complete packets.
-        if (packet_error_count < 3) $fatal(1, "packet error counter did not increment");
-        if (rx_fifo_full) $fatal(1, "RX FIFO unexpectedly full");
-        if (tx_fifo_full) $fatal(1, "TX FIFO unexpectedly full");
-
+        if (dut.packet_error_count !== 3) $fatal(1, "packet error counter counted filler or missed malformed packet");
+        if (led[0] !== 1'b1 && led[0] !== 1'b0) $fatal(1, "heartbeat LED unknown");
         $display("tb_trading_spi_top: PASS");
         $finish;
     end

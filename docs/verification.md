@@ -10,9 +10,12 @@ The SystemVerilog testbench is self-checking and exercises:
 - CRC rejection with a deterministic error status;
 - incomplete-frame detection;
 - RX FIFO overflow visibility;
-- TX FIFO empty behavior during request/turnaround transfers.
+- TX FIFO empty behavior during request/turnaround transfers;
+- mode-0 response scheduling across request, turnaround, and response frames;
+- power-on reset with the external SPI clock held idle;
+- async FIFO ordering, full/empty flags, reset during traffic, and overflow/underflow counters using unrelated clocks.
 
-The C++ utility exercises the same packet serializer/parser and a deterministic software transport. It reports success/failure statistics and latency percentiles without labeling software timing as FPGA hardware timing.
+The C++ utility exercises the same packet serializer/parser and a deterministic software transport. It reports success/failure statistics, latency percentiles, end-to-end elapsed time, and effective packets/second. The output explicitly labels simulation versus real hardware and does not label software timing as FPGA hardware timing.
 
 ## Future checks
 

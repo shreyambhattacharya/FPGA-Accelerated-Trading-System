@@ -99,7 +99,8 @@ int main(int argc, char** argv) {
     }
 
     const auto summary = tracker.summary();
-    std::cout << "transport=" << transport->description() << "\n"
+    std::cout << "mode=" << (options.simulation ? "SIMULATION" : "REAL_HARDWARE") << "\n"
+              << "transport=" << transport->description() << "\n"
               << "packets_sent=" << summary.packets_sent
               << " packets_returned=" << summary.packets_returned
               << " failures=" << summary.failures
@@ -107,8 +108,10 @@ int main(int argc, char** argv) {
               << " corrupted=" << summary.corrupted_packets
               << " other_failures=" << summary.other_failures
               << " sequence_errors=" << summary.sequence_errors << "\n";
+    std::cout << "elapsed_ns=" << summary.elapsed_ns
+              << " effective_packets_per_second=" << summary.effective_packets_per_second << "\n";
     if (summary.packets_returned != 0) {
-        std::cout << "rtt_software_or_hardware_ns: min=" << summary.minimum_ns
+        std::cout << "rtt_ns: min=" << summary.minimum_ns
                   << " p50=" << summary.p50_ns
                   << " p95=" << summary.p95_ns
                   << " p99=" << summary.p99_ns

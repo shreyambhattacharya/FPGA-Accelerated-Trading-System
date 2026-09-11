@@ -26,11 +26,19 @@ The external SPI mapping is the wiring contract for this project and must be cro
 1. Install the Gowin IDE/toolchain appropriate for the Tang Nano 20K and connect the board through its normal USB-C programming interface.
 2. Open `fpga/gowin/fpga_trading.gprj`.
 3. Confirm the project device is `GW2AR-18C` / `GW2AR-LV18QN88C8/I7`, the top module is `trading_spi_top`, and the source list includes the reset, async FIFO, SPI, protocol, and top-level RTL files.
-4. Confirm the project includes `fpga/constraints/tang_nano_20k.cst` and `fpga/constraints/tang_nano_20k.sdc`.
-5. Run synthesis, then place-and-route/bitstream generation. Resolve any IDE version-specific constraint or primitive warning before programming.
-6. Download the generated bitstream to the board for a volatile test, or program the board's configuration flash using the normal Gowin/Sipeed flow if persistence is desired.
+4. Set the HDL language option to **SystemVerilog 2017** (`sysv2017` / `sysv-2017`, depending on the IDE version). The checked-in `fpga/gowin/configure_project.tcl` contains the explicit `set_option -verilog_std sysv2017` setting; source it in the Gowin Tcl console or configure the same option in the project GUI. The `.gprj` remains in the vendor's portable project format.
+5. Confirm the project includes `fpga/constraints/tang_nano_20k.cst` and `fpga/constraints/tang_nano_20k.sdc`.
+6. Run synthesis and inspect the synthesis log. Do not proceed to place-and-route or program hardware while EX3209, EX2213, AG0100, or AG0101 warnings remain.
+7. After synthesis is clean, run place-and-route/bitstream generation. Resolve any IDE-version-specific constraint or primitive warning before programming.
+8. Download the generated bitstream to the board for a volatile test, or program the board's configuration flash using the normal Gowin/Sipeed flow if persistence is desired.
 
-This repository does not include a Gowin compiler invocation because the vendor toolchain is not installed in the development environment used to prepare the RTL. A successful Icarus simulation is not evidence of place-and-route or physical timing closure.
+The checked-in RTL was also exercised with GowinSynthesis when that vendor tool was available in the development environment. A successful synthesis is not evidence of place-and-route timing closure or physical Pi↔FPGA validation.
+
+## Synthesis-warning troubleshooting
+
+- **EX3209** means the HDL was parsed as Verilog 2001 or a helper function was left at compilation-unit scope. Use SystemVerilog 2017 and keep shared helpers in `protocol_pkg.sv`.
+- **EX2213** means a persistent state transition is being performed from an asynchronous set/reset branch. CS may only clear the per-frame shift/count registers; protocol phase transitions must occur on rising `spi_clk`.
+- **AG0100 / AG0101** means the synthesized control path contains a logical feedback loop or non-DAG netlist. Do not program the board until the underlying RTL is corrected and the warnings disappear; warning filters are not an acceptable fix.
 
 ## Safe wiring sequence
 
@@ -89,7 +97,7 @@ If the result reports a missing response, stop and check CS polarity, MOSI/MISO 
 - LED2: active-low sticky protocol/CRC error indication.
 - LED3–LED5: off in this milestone.
 
-The internal counters for FIFO overflow/underflow, incomplete frames, and packet errors are retained for simulation and future debug instrumentation. They are not exposed as extra Pi wires in this milestone.
+The internal counters for FIFO overflow/underflow and packet errors are retained for simulation and future debug instrumentation. Incomplete frames are discarded by the per-frame reset and are not exposed as a separate asynchronous diagnostic wire.
 
 ## Physical validation record
 

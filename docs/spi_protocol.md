@@ -40,7 +40,7 @@ The reserved type values are stable now so the FPGA does not need to change when
 | `0xE2` | CRC/checksum failure |
 | `0xE3` | unsupported message type |
 
-For a 32-byte malformed request, the FPGA copies the request's symbol, timestamp, data, quantity, and sequence fields into the response to simplify diagnostics. For an incomplete frame, no packet is emitted because there is no complete sequence field to validate; the RTL exposes a sticky incomplete-frame diagnostic.
+For a 32-byte malformed request, the FPGA copies the request's symbol, timestamp, data, quantity, and sequence fields into the response to simplify diagnostics. An incomplete CS-framed transfer is discarded by the per-frame reset and produces no packet; the next complete frame starts cleanly. No asynchronous incomplete-frame diagnostic is part of the production datapath.
 
 ## SPI bit order
 

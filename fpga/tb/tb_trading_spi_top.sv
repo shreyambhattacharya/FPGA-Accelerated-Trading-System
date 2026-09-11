@@ -3,6 +3,7 @@
 `include "protocol_defs.svh"
 
 module tb_trading_spi_top;
+    import protocol_pkg::*;
     reg clk = 1'b0;
     reg spi_clk = 1'b0;
     reg spi_cs_n = 1'b1;
@@ -54,9 +55,13 @@ module tb_trading_spi_top;
     task automatic spi_transfer;
         input [255:0] transmit;
         output [255:0] receive;
+        output first_sample;
+        output last_sample;
         integer bit_index;
         begin
             receive = 256'd0;
+            first_sample = 1'b0;
+            last_sample = 1'b0;
             spi_cs_n = 1'b0;
             #40;
             for (bit_index = 0; bit_index < 256; bit_index = bit_index + 1) begin
@@ -65,6 +70,8 @@ module tb_trading_spi_top;
                 spi_clk = 1'b1;
                 #20;
                 receive[255-bit_index] = spi_miso;
+                if (bit_index == 0) first_sample = spi_miso;
+                if (bit_index == 255) last_sample = spi_miso;
                 #80;
                 spi_clk = 1'b0;
                 #20;
@@ -78,52 +85,99 @@ module tb_trading_spi_top;
     task automatic exchange_loopback;
         input [255:0] request;
         output [255:0] response;
+        output first_response_bit;
+        output last_response_bit;
         reg [255:0] ignored;
+        reg ignored_first;
+        reg ignored_last;
+        reg [2:0] tx_read_before;
         begin
-            spi_transfer(request, ignored);
-            spi_transfer(256'd0, ignored);
-            spi_transfer(256'd0, response);
+            tx_read_before = dut.tx_fifo_i.rd_bin;
+            spi_transfer(request, ignored, ignored_first, ignored_last);
+            if (dut.tx_fifo_i.rd_bin !== tx_read_before)
+                $fatal(1, "TX FIFO dequeued during request transaction");
+            spi_transfer(256'd0, ignored, ignored_first, ignored_last);
+            if (dut.tx_fifo_i.rd_bin !== tx_read_before)
+                $fatal(1, "TX FIFO dequeued during turnaround transaction");
+            spi_transfer(256'd0, response, first_response_bit, last_response_bit);
+            if (dut.tx_fifo_i.rd_bin !== (tx_read_before + 3'd1))
+                $fatal(1, "TX FIFO did not dequeue exactly one response");
+        end
+    endtask
+
+    task automatic pulse_internal_reset;
+        begin
+            spi_cs_n = 1'b1;
+            spi_clk = 1'b0;
+            spi_mosi = 1'b0;
+            force dut.reset_n_int = 1'b0;
+            #100;
+            release dut.reset_n_int;
+            #200;
         end
     endtask
 
     reg [255:0] request;
     reg [255:0] response;
+    reg first_response_bit;
+    reg last_response_bit;
+    reg [255:0] empty_response;
+    reg empty_first_bit;
+    reg empty_last_bit;
     integer seq_index;
 
     initial begin
         wait (dut.reset_n_int === 1'b1);
         #500;
 
+        // A response-phase transaction with an empty TX FIFO must return a
+        // deterministic all-zero frame rather than X data or a stale packet.
+        force dut.spi_slave_i.phase = 2'd2;
+        spi_transfer(256'd0, empty_response, empty_first_bit, empty_last_bit);
+        release dut.spi_slave_i.phase;
+        force dut.spi_slave_i.phase = 2'd0;
+        #1;
+        release dut.spi_slave_i.phase;
+        if (empty_response !== 256'd0) $fatal(1, "empty TX FIFO was not deterministic");
+
+        // Reset while CS is high between frames. The next request must still
+        // complete normally, proving persistent state has a single reset owner.
+        pulse_internal_reset();
+
         request = make_request(32'd17, `MSG_LOOPBACK, `PROTOCOL_SYNC_VERSION);
-        exchange_loopback(request, response);
+        exchange_loopback(request, response, first_response_bit, last_response_bit);
         if (byte_of(response, 0) !== `PROTOCOL_SYNC_VERSION) $fatal(1, "valid response sync failed");
         if (byte_of(response, 1) !== `MSG_STATUS) $fatal(1, "valid response type failed");
         if (byte_of(response, 24) !== `STATUS_OK) $fatal(1, "valid loopback status failed");
         if (response[55:24] !== 32'd17) $fatal(1, "valid loopback sequence failed");
         if (byte_of(response, 31) !== crc8_packet(response)) $fatal(1, "valid response CRC failed");
+        if (first_response_bit !== 1'b1) $fatal(1, "first response bit was not byte 0 MSB");
+        if (last_response_bit !== response[0]) $fatal(1, "last response bit was not CRC LSB");
 
         for (seq_index = 18; seq_index < 23; seq_index = seq_index + 1) begin
             request = make_request(seq_index, `MSG_LOOPBACK, `PROTOCOL_SYNC_VERSION);
-            exchange_loopback(request, response);
+            exchange_loopback(request, response, first_response_bit, last_response_bit);
             if (byte_of(response, 24) !== `STATUS_OK) $fatal(1, "sequential status failed");
             if (response[55:24] !== seq_index) $fatal(1, "sequential sequence failed");
         end
 
         request = make_request(32'd99, `MSG_LOOPBACK, `PROTOCOL_SYNC_VERSION);
         request[7:0] = request[7:0] ^ 8'h01;
-        exchange_loopback(request, response);
+        exchange_loopback(request, response, first_response_bit, last_response_bit);
         if (byte_of(response, 24) !== `STATUS_BAD_CHECKSUM) $fatal(1, "bad CRC status failed");
         if (response[55:24] !== 32'd99) $fatal(1, "bad CRC sequence failed");
 
         request = make_request(32'd100, 8'h55, `PROTOCOL_SYNC_VERSION);
-        exchange_loopback(request, response);
+        exchange_loopback(request, response, first_response_bit, last_response_bit);
         if (byte_of(response, 24) !== `STATUS_BAD_TYPE) $fatal(1, "bad type status failed");
 
         request = make_request(32'd101, `MSG_LOOPBACK, 8'h00);
-        exchange_loopback(request, response);
+        exchange_loopback(request, response, first_response_bit, last_response_bit);
         if (byte_of(response, 24) !== `STATUS_BAD_SYNC) $fatal(1, "bad sync status failed");
 
-        // Incomplete CS frame must be detected without a reset or extra clock.
+        // An incomplete CS frame is discarded by the per-frame reset. The
+        // production datapath intentionally has no asynchronous diagnostic
+        // state; the next complete request must still work.
         spi_cs_n = 1'b0;
         repeat (8) begin
             spi_mosi = 1'b0;
@@ -131,7 +185,10 @@ module tb_trading_spi_top;
         end
         spi_cs_n = 1'b1;
         #100;
-        if (!dut.incomplete_frame_seen) $fatal(1, "incomplete frame not detected");
+        request = make_request(32'd102, `MSG_LOOPBACK, `PROTOCOL_SYNC_VERSION);
+        exchange_loopback(request, response, first_response_bit, last_response_bit);
+        if (byte_of(response, 24) !== `STATUS_OK) $fatal(1, "incomplete frame poisoned next request");
+        if (response[55:24] !== 32'd102) $fatal(1, "post-incomplete sequence failed");
 
         if (dut.packet_error_count !== 3) $fatal(1, "packet error counter counted filler or missed malformed packet");
         if (led[0] !== 1'b1 && led[0] !== 1'b0) $fatal(1, "heartbeat LED unknown");

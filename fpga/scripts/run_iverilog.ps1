@@ -8,6 +8,7 @@ $sources = @(
     (Join-Path $repoRoot 'fpga\rtl\reset\power_on_reset.sv'),
     (Join-Path $repoRoot 'fpga\rtl\fifo\async_packet_fifo.sv'),
     (Join-Path $repoRoot 'fpga\rtl\fifo\packet_fifo.sv'),
+    (Join-Path $repoRoot 'fpga\rtl\protocol\protocol_pkg.sv'),
     (Join-Path $repoRoot 'fpga\rtl\spi\spi_slave.sv'),
     (Join-Path $repoRoot 'fpga\rtl\protocol\loopback_engine.sv'),
     (Join-Path $repoRoot 'fpga\rtl\top\trading_spi_top.sv'),

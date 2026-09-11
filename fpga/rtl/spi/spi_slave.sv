@@ -2,9 +2,9 @@
 
 `include "protocol_defs.svh"
 
-// SPI mode-0 slave. MOSI is sampled on rising SCLK; MISO advances on falling
-// SCLK. CS is an asynchronous frame boundary, which lets the slave recognize
-// an incomplete transaction even when the master stops clocking immediately.
+// SPI mode-0 slave. Persistent request/turnaround/response state is owned by
+// posedge spi_clk. CS is only combined with reset_n to clear per-frame
+// shift/count state; it never changes the persistent protocol phase.
 module spi_slave (
     input  wire                     reset_n,
     input  wire                     spi_clk,
@@ -16,7 +16,6 @@ module spi_slave (
     output reg                      rx_packet_valid,
     input  wire                     rx_packet_ready,
     output reg                      rx_overflow_pulse,
-    output reg                      incomplete_frame_seen,
     output reg                      packet_complete_toggle,
 
     input  wire [`PACKET_BITS-1:0] tx_packet_data,
@@ -24,122 +23,132 @@ module spi_slave (
     output wire                     tx_packet_rd_en,
     output reg                      tx_empty_transaction_pulse
 );
-    // These configuration-time values are also the reset values. They are
-    // important when the Raspberry Pi holds SCLK idle while the FPGA powers
-    // up: the SPI domain may not receive a clock edge until after reset is
-    // released.
+    localparam [1:0] WAIT_REQUEST    = 2'd0;
+    localparam [1:0] WAIT_TURNAROUND = 2'd1;
+    localparam [1:0] RESPONSE_READY  = 2'd2;
+
+    reg [1:0] phase = WAIT_REQUEST;
+
+    // Per-frame state. These registers are reset only to fixed constants when
+    // CS is inactive; they do not own protocol scheduling decisions.
     reg [`PACKET_BITS-1:0] rx_shift = 0;
     reg [8:0] rx_bit_count = 0;
     reg [`PACKET_BITS-1:0] tx_shift = 0;
     reg [8:0] tx_bit_index = 0;
     reg tx_started = 1'b0;
     reg tx_has_data = 1'b0;
-    reg tx_allowed_for_frame = 1'b0;
-    reg response_pending = 1'b0;
 
+    // Configuration-time values are required because the Pi can hold SCLK
+    // idle while the FPGA powers up and releases the shared system reset.
     initial begin
         rx_packet = 0;
         rx_packet_valid = 1'b0;
         rx_overflow_pulse = 1'b0;
-        incomplete_frame_seen = 1'b0;
         packet_complete_toggle = 1'b0;
         tx_empty_transaction_pulse = 1'b0;
     end
 
-    // Before the first rising edge, the FIFO head supplies MISO bit 7. At
-    // that rising edge the complete TX packet is latched for the frame.
+    // CS is used here only as a per-frame asynchronous clear. The persistent
+    // phase, packet holding register, and diagnostic pulses are not assigned
+    // in this block or in any CS edge-sensitive block.
+    wire frame_reset_n = reset_n && !cs_n;
+    wire [`PACKET_BITS-1:0] completed_frame =
+        {rx_shift[`PACKET_BITS-2:0], mosi};
+    wire frame_complete = (rx_bit_count == (`PACKET_BITS - 1));
+    wire transaction_start = !cs_n && !tx_started && (rx_bit_count == 0);
+    wire response_transaction = (phase == RESPONSE_READY);
+
+    // The TX FIFO is read only once, at the first rising edge of the response
+    // transaction. In request and turnaround phases MISO is deterministic zero.
+    assign tx_packet_rd_en = transaction_start && response_transaction &&
+                             tx_packet_valid;
     assign miso = !cs_n ?
-                  (tx_started ? (tx_has_data ? tx_shift[`PACKET_BITS-1-tx_bit_index] : 1'b0) :
-                                (tx_allowed_for_frame && tx_packet_valid ?
-                                    tx_packet_data[`PACKET_BITS-1] : 1'b0)) :
+                  (tx_started ?
+                      (tx_has_data ? tx_shift[`PACKET_BITS-1-tx_bit_index] : 1'b0) :
+                      (response_transaction && tx_packet_valid ?
+                          tx_packet_data[`PACKET_BITS-1] : 1'b0)) :
                   1'b0;
 
-    // The host protocol is request / turnaround / response. A response that
-    // becomes available during the turnaround frame must remain queued until
-    // the following frame, so only an explicitly eligible frame can dequeue
-    // the TX FIFO.
-    assign tx_packet_rd_en = !cs_n && !tx_started && (rx_bit_count == 0) &&
-                             tx_allowed_for_frame && tx_packet_valid;
-
-    // Frame state is reset by CS deassertion as well as global reset. The
-    // complete-packet holding register intentionally survives CS high until
-    // the asynchronous RX FIFO accepts it on a later SPI clock.
-    always @(posedge spi_clk or negedge reset_n or posedge cs_n) begin
-        if (!reset_n) begin
+    // Per-frame receive/transmit state. CS only restores fixed frame state;
+    // all protocol transitions are in the persistent posedge block below.
+    always @(posedge spi_clk or negedge frame_reset_n) begin
+        if (!frame_reset_n) begin
             rx_shift <= 0;
-            rx_packet <= 0;
-            rx_packet_valid <= 1'b0;
-            rx_overflow_pulse <= 1'b0;
-            packet_complete_toggle <= 1'b0;
             rx_bit_count <= 0;
             tx_shift <= 0;
             tx_started <= 1'b0;
             tx_has_data <= 1'b0;
-            tx_allowed_for_frame <= 1'b0;
-            response_pending <= 1'b0;
-            tx_empty_transaction_pulse <= 1'b0;
-        end else if (cs_n) begin
-            rx_shift <= 0;
-            rx_bit_count <= 0;
-            tx_started <= 1'b0;
-            tx_has_data <= 1'b0;
-
-            // A complete nonzero packet is a request. The next complete
-            // zero-filled frame is the turnaround; only after it ends is the
-            // next frame allowed to dequeue a response.
-            if (response_pending && (rx_bit_count == `PACKET_BITS) &&
-                (rx_packet == {`PACKET_BITS{1'b0}})) begin
-                tx_allowed_for_frame <= 1'b1;
-                response_pending <= 1'b0;
+        end else begin
+            if (transaction_start) begin
+                tx_started <= 1'b1;
+                tx_has_data <= response_transaction && tx_packet_valid;
+                if (response_transaction && tx_packet_valid)
+                    tx_shift <= tx_packet_data;
             end
+
+            if (rx_bit_count < `PACKET_BITS) begin
+                rx_shift <= completed_frame;
+                rx_bit_count <= rx_bit_count + 1'b1;
+            end
+        end
+    end
+
+    // MISO advances after the master samples the current bit, which preserves
+    // CPOL=0/CPHA=0 timing and leaves the first bit valid before the first
+    // response rising edge.
+    always @(negedge spi_clk or negedge frame_reset_n) begin
+        if (!frame_reset_n) begin
+            tx_bit_index <= 0;
+        end else if (tx_started && (tx_bit_index < (`PACKET_BITS - 1))) begin
+            tx_bit_index <= tx_bit_index + 1'b1;
+        end
+    end
+
+    // Persistent protocol state. The completed frame is evaluated on its final
+    // rising edge, so no CS edge is needed to classify request or turnaround.
+    always @(posedge spi_clk or negedge reset_n) begin
+        if (!reset_n) begin
+            phase <= WAIT_REQUEST;
+            rx_packet <= 0;
+            rx_packet_valid <= 1'b0;
+            rx_overflow_pulse <= 1'b0;
+            packet_complete_toggle <= 1'b0;
+            tx_empty_transaction_pulse <= 1'b0;
         end else begin
             rx_overflow_pulse <= 1'b0;
             tx_empty_transaction_pulse <= 1'b0;
 
-            if (rx_packet_valid && rx_packet_ready) rx_packet_valid <= 1'b0;
+            if (!cs_n) begin
+                if (rx_packet_valid && rx_packet_ready)
+                    rx_packet_valid <= 1'b0;
 
-            if (!tx_started && (rx_bit_count == 0)) begin
-                tx_started <= 1'b1;
-                tx_allowed_for_frame <= 1'b0;
-                tx_has_data <= tx_allowed_for_frame && tx_packet_valid;
-                if (tx_allowed_for_frame && tx_packet_valid)
-                    tx_shift <= tx_packet_data;
-                else if (tx_allowed_for_frame)
+                if (transaction_start && response_transaction && !tx_packet_valid)
                     tx_empty_transaction_pulse <= 1'b1;
-            end
 
-            if (rx_bit_count < `PACKET_BITS) begin
-                rx_shift <= {rx_shift[`PACKET_BITS-2:0], mosi};
-                rx_bit_count <= rx_bit_count + 1'b1;
-                if (rx_bit_count == (`PACKET_BITS - 1)) begin
-                    rx_packet <= {rx_shift[`PACKET_BITS-2:0], mosi};
+                if (frame_complete) begin
+                    rx_packet <= completed_frame;
                     packet_complete_toggle <= ~packet_complete_toggle;
-                    if ({rx_shift[`PACKET_BITS-2:0], mosi} !=
-                        {`PACKET_BITS{1'b0}})
-                        response_pending <= 1'b1;
+
                     if (rx_packet_valid && !rx_packet_ready) begin
                         rx_overflow_pulse <= 1'b1;
                     end else begin
                         rx_packet_valid <= 1'b1;
                     end
+
+                    case (phase)
+                    WAIT_REQUEST:
+                        if (completed_frame != {`PACKET_BITS{1'b0}})
+                            phase <= WAIT_TURNAROUND;
+                    WAIT_TURNAROUND:
+                        if (completed_frame == {`PACKET_BITS{1'b0}})
+                            phase <= RESPONSE_READY;
+                    RESPONSE_READY:
+                        phase <= WAIT_REQUEST;
+                    default:
+                        phase <= WAIT_REQUEST;
+                    endcase
                 end
             end
         end
-    end
-
-    // Mode-0 transmit data changes on falling SCLK edges.
-    always @(negedge spi_clk or negedge reset_n or posedge cs_n) begin
-        if (!reset_n) tx_bit_index <= 0;
-        else if (cs_n) tx_bit_index <= 0;
-        else if (tx_started && (tx_bit_index < (`PACKET_BITS - 1)))
-            tx_bit_index <= tx_bit_index + 1'b1;
-    end
-
-    // Sticky diagnostic for a CS frame that ended after a nonzero, incomplete
-    // number of bits. This is not part of the latency datapath.
-    always @(posedge cs_n or negedge reset_n) begin
-        if (!reset_n) incomplete_frame_seen <= 1'b0;
-        else if ((rx_bit_count != 0) && (rx_bit_count != `PACKET_BITS))
-            incomplete_frame_seen <= 1'b1;
     end
 endmodule

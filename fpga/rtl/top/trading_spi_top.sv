@@ -26,7 +26,6 @@ module trading_spi_top (
     wire rx_packet_valid;
     wire rx_packet_ready;
     wire rx_overflow_pulse;
-    wire incomplete_frame_seen;
     wire packet_complete_toggle;
     wire tx_packet_rd_en;
     wire [`PACKET_BITS-1:0] tx_packet_data;
@@ -63,7 +62,6 @@ module trading_spi_top (
         .rx_packet_valid(rx_packet_valid),
         .rx_packet_ready(rx_packet_ready),
         .rx_overflow_pulse(rx_overflow_pulse),
-        .incomplete_frame_seen(incomplete_frame_seen),
         .packet_complete_toggle(packet_complete_toggle),
         .tx_packet_data(tx_packet_data),
         .tx_packet_valid(tx_packet_valid),

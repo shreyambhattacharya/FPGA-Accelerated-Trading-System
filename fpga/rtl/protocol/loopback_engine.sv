@@ -16,6 +16,7 @@ module loopback_engine (
     output reg  [`PACKET_BITS-1:0] response_packet,
     output reg                     packet_error_pulse
 );
+    import protocol_pkg::*;
     reg response_valid_reg;
     wire packet_is_filler = (packet_in == {`PACKET_BITS{1'b0}});
     wire accepted = packet_valid && packet_ready;

@@ -1,4 +1,7 @@
 fpga/build/
+fpga/gowin/impl/
+fpga/gowin/validation/
+fpga/gowin/*.gprj.user
 host/build/
 host/*.exe
 *.vvp

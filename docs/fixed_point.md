@@ -46,3 +46,21 @@ The Python model in `tools/reference_model/market_model.py` implements the
 same ring replacement, integer widths, validity, reset, and warm-up behavior.
 Sequence numbers are compared as unsigned values; wraparound ordering is not
 implemented yet and is explicitly out of scope.
+
+## Arithmetic sharing and scheduling
+
+The market engine has one serialized `64 x 32` price-by-quantity operation in
+its trade path. The result is registered as a 96-bit term and then applied to
+the rolling VWAP accumulators. Gowin maps the tested implementation to fabric
+logic with 0 DSP blocks; no multiplier or divider is replicated for each
+symbol. The VWAP quotient is intentionally not calculated in this milestone,
+so the numerator and denominator remain exact integer accumulators for a later
+consumer.
+
+Wide arithmetic is sequenced across `READ_HISTORY`, `CAPTURE_HISTORY`,
+`MULTIPLY_TRADE`, `APPLY_EVENT`, and `FEATURE_CALC`. The selected symbol's
+state and the old circular-window terms are first copied into working
+registers. This adds event latency, but prevents a live symbol-indexed mux
+tree from sharing a cycle with the 64/96/101-bit feature arithmetic. The
+registered output and valid/ready contract preserve the exact values and
+validity semantics while allowing feature backpressure.

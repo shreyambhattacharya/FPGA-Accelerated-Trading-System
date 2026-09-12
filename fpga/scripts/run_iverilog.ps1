@@ -77,6 +77,18 @@ foreach ($symbolCount in @(1, 4, 8, 16, 32)) {
     if ($LASTEXITCODE -ne 0) { throw "NUM_SYMBOLS=$symbolCount simulation failed" }
 }
 
+$n32StressOutput = Join-Path $buildDir 'tb_market_n32_stress.vvp'
+iverilog -g2012 -Wall -I (Join-Path $repoRoot 'fpga\rtl\protocol') -s tb_market_n32_stress -o $n32StressOutput `
+    (Join-Path $repoRoot 'fpga\rtl\market\market_state_engine.sv') `
+    (Join-Path $repoRoot 'fpga\tb\tb_market_n32_stress.sv')
+if ($LASTEXITCODE -ne 0) { throw "N32 stressbench compilation failed" }
+
+vvp $n32StressOutput
+if ($LASTEXITCODE -ne 0) { throw "N32 stressbench failed" }
+
 $differentialScript = Join-Path $repoRoot 'tools\reference_model\differential_test.py'
 python $differentialScript
 if ($LASTEXITCODE -ne 0) { throw "Python versus RTL differential test failed" }
+
+python $differentialScript --count 10000
+if ($LASTEXITCODE -ne 0) { throw "10k Python versus RTL differential stress failed" }

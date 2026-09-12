@@ -23,16 +23,74 @@ The starter symbol table is numeric and parameterized: `0=SPY`, `1=QQQ`,
 `2=NVDA`, and `3=AMD`. `NUM_SYMBOLS` can be changed without changing the
 packet format or physical interface.
 
+## Measured N32 bottleneck and refactor
+
+The baseline for commit `651fc38` was measured from the Gowin post-P&R report.
+The exact N32 critical path was:
+
+```text
+impl/packet_dispatcher_i/event_symbol_id_reg_4_s0/Q
+  -> impl/market_state_engine_i/last_sequence_number[20]_7_s0/CE
+```
+
+It had 34.017 ns data delay, 2.985 ns setup slack against the 37.037 ns
+`clk27` constraint, and a reported `clk27` Fmax of 29.366 MHz. This cone
+combined packet-derived symbol decode, dynamic per-symbol bank access, and
+wide state write-enable generation. The baseline N32 market-engine hierarchy
+reported 1,038 registers, 715 LUTs, and 6 BSRAM blocks; the device P&R report
+showed 130 total `SSRAM(RAM16)` resources.
+
+The new market engine is serialized and registered:
+
+```text
+IDLE -> READ_STATE -> CHECK_SEQUENCE -> SET_HISTORY_ADDR
+     -> READ_HISTORY -> CAPTURE_HISTORY -> [MULTIPLY_TRADE]
+     -> APPLY_EVENT -> FEATURE_CALC -> WRITE_STATE
+     -> WRITE_HISTORY -> OUTPUT
+```
+
+The event fields, symbol index, and one-hot bank select are captured first.
+`READ_STATE` copies all selected per-symbol fields into a working register
+bank. History terms are read and captured in `old_*` registers before rolling
+sum and momentum arithmetic. `FEATURE_CALC` therefore consumes registered
+working values instead of a live 32-way array read feeding the feature cone.
+`WRITE_STATE` commits only the selected bank. The longer schedule is an
+intentional latency/area/timing tradeoff.
+
+The per-symbol quote/trade/sequence state, valid bits, rolling accumulators,
+pointers, and counts remain registers. This gives the single-event
+read/modify/write transaction a coherent view without adding multi-port RAM
+scheduling. The four circular histories remain separate banked arrays with one
+registered read and one write at the commit stage.
+
+Gowin logs RAM extraction for `trade_quantity_history`, `midpoint_history`,
+`vwap_price_quantity_history`, and `vwap_quantity_history`, but the final
+post-P&R mapping is the source of truth: the N32 synthesis report says
+`BSRAM 0/46`, and the market-engine hierarchy has no BSRAM/SSRAM count. The
+124 `SSRAM(RAM16)` blocks in P&R are the existing RX/TX async FIFO storage,
+not verified market-history BSRAM. The banked form is retained because the
+flattened-address and explicit-wrapper experiments did not improve this
+target's mapping; the limitation is documented rather than hidden.
+
+There is one shared, event-serialized unsigned `64 x 32 -> 96` multiplier in
+`MULTIPLY_TRADE`, and no per-symbol multipliers, feature engines, or dividers.
+Gowin reports 0 DSP blocks; the product uses fabric logic. VWAP quotient
+division remains outside this milestone.
+
 ## Timing-hardened packet validation
 
 The loopback stage validates and generates CRC-8/ATM values with the standalone `fpga/rtl/protocol/crc8_engine.sv`. It accepts one byte per `clk27` cycle and consumes the first 31 bytes of each 32-byte packet; the final byte is the transmitted CRC. The request and response CRC streams are separated by registered FSM states, so the old full-packet combinational CRC/response cone is no longer a single-cycle `clk27` path. The engine reports `done` after the final byte edge and holds the result until the next stream.
 
 At 27 MHz, each 31-byte CRC stream takes 31 system-clock cycles (about 1.15
-us). Market events then pass through a registered dispatcher boundary and a
-multi-state market update/feature/output sequence. The feature record is
-registered and held under downstream backpressure. Market packets do not
-create a loopback response; the existing three-transfer request/turnaround/
-response framing remains available for diagnostics and future result packets.
+us). The serialized market engine asserts a feature for a quote 10 `clk27`
+edges after acceptance and for a trade 11 edges after acceptance. With
+`feature_ready=1`, the next accepted event can arrive after 12 quote cycles
+or 13 trade cycles, which is a theoretical engine bound of 2.25 Mquote/s or
+2.077 Mtrade/s. Backpressure holds the registered feature and deasserts
+`event_ready`; these rates exclude SPI, FIFO, dispatcher, host, and future
+consumer costs. Market packets do not create a loopback response; the existing
+three-transfer request/turnaround/response framing remains available for
+diagnostics and future result packets.
 
 ## Pi responsibilities
 

@@ -17,6 +17,9 @@ The script runs the existing SPI/CDC/CRC/loopback regressions plus:
   symbol/side, reset, and feature backpressure;
 - `tb_market_parameter.sv`: compile/elaborate/run smoke points for
   `NUM_SYMBOLS=1,4,8,16,32`;
+- `tb_market_n32_stress.sv`: deterministic N32 round-robin, hot-symbol,
+  pseudo-random, rolling-wrap, sequence-wrap, reset/interleaving, and
+  feature-backpressure coverage;
 - `tools/reference_model/differential_test.py`: deterministic packet replay
   through the dispatcher and market engine against the independent Python
   model.
@@ -26,6 +29,23 @@ latest run, produced 915 feature records, 84 engine rejections, and 1 explicit
 dispatcher symbol error with zero mismatches. It includes all four starter
 symbols, quote/trade interleaving, duplicate/stale and bad-side cases, crossed
 quotes, zero quantity, large prices, and maximum-width price/quantity fields.
+
+The same fixed seed (`0x5EED`) at 10,000 events produced exactly 9,032
+accepted feature records, 967 engine rejections, 1 dispatcher error, and 0
+mismatches. The counts are reported by the test, not substituted into the
+oracle to make a run pass.
+
+The N32 stressbench completed with:
+
+```text
+tb_market_n32_stress: PASS symbols=32 rounds=6 random=160
+```
+
+It exercises rapid symbol changes, all-32 round robin, repeated symbol 7
+traffic, deterministic random interleaving, circular-window updates, stale
+sequence after the unsupported wrap boundary, reset while state is populated,
+and a five-cycle feature stall. The feature record remained stable during the
+stall and no symbol state leaked into another bank.
 
 The C++ utility continues to exercise packet serialization/parsing and the
 deterministic software transport. Its output labels simulation versus real
@@ -39,9 +59,20 @@ place-and-route, timing, and bitstream generation. The matrix driver
 using physical-IO-preserving wrappers. Reports stay under the ignored
 `fpga/gowin/validation` directory.
 
-The current matrix has zero setup/hold TNS at both `clk27` and `spi_clk` for
-all four points. It still reports PR1014 for the generic routing of `clk_d` and
+The final matrix has zero setup/hold TNS at both `clk27` and `spi_clk` for all
+four points. The post-P&R `clk27` Fmax values are 68.327, 72.627, 82.566, and
+75.516 MHz for N4/N8/N16/N32 respectively. The corresponding P&R logic levels
+are 8, 8, 7, and 7. It still reports PR1014 for generic routing of `clk_d` and
 `spi_clk_d`; this is documented in the bring-up guide and is not suppressed.
+
+The host loopback regression also passed in its software transport mode:
+
+```text
+packets_sent=1000 packets_returned=1000 failures=0 missing=0 corrupted=0
+other_failures=0 sequence_errors=0
+```
+
+That is a deterministic PC simulation result, not Pi↔FPGA hardware evidence.
 
 Physical Pi↔Tang validation has not been run because the hardware is not
 available in this development environment. Any hardware result must record

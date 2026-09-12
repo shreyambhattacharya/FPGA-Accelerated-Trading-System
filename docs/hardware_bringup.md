@@ -34,9 +34,10 @@ The external SPI mapping is the wiring contract for this project and must be cro
 
 The checked-in RTL was also exercised with GowinSynthesis and place-and-route
 when that vendor tool was available in the development environment. The CRC
-engine is a byte-per-system-clock datapath and the market histories are
-inferred as RAM16 resources by this tool run. Synthesis/P&R success is not
-evidence of physical Pi↔FPGA validation.
+engine is a byte-per-system-clock datapath. Gowin logs the four market history
+arrays as RAM extraction candidates, but the final synthesis report maps
+`BSRAM 0/46`; the 124 P&R RAM16 resources are the existing RX/TX FIFO storage.
+Synthesis/P&R success is not evidence of physical Pi↔FPGA validation.
 
 For a reproducible command-line implementation run, use the checked-in
 `fpga/scripts/run_gowin_pnr.tcl` with Gowin's `gw_sh.exe`. The local default
@@ -51,21 +52,33 @@ the implementation used no DSP blocks.
 
 | `NUM_SYMBOLS` | LUT | FF | RAM16/BRAM blocks | DSP | `clk27` Fmax | setup slack | hold slack | TNS setup/hold | critical `clk27` path |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| 4 | 1,609 | 2,101 | 133 | 0 | 93.264 MHz | 26.315 ns | 0.313 ns | 0 / 0 ns | loopback byte index → CRC result |
-| 8 | 1,451 | 2,105 | 133 | 0 | 86.086 MHz | 25.421 ns | 0.313 ns | 0 / 0 ns | RX FIFO pointer → dispatcher packet register |
-| 16 | 1,505 | 2,113 | 133 | 0 | 76.170 MHz | 23.909 ns | 0.313 ns | 0 / 0 ns | dispatcher byte index → CRC result |
-| 32 | 2,153 | 3,132 | 130 | 0 | 29.366 MHz | 2.985 ns | 0.313 ns | 0 / 0 ns | dispatcher symbol register → per-symbol sequence CE |
+| 4 | 1,609 | 2,308 | 124 | 0 | 68.327 MHz | 22.402 ns | 0.313 ns | 0 / 0 ns | RX FIFO pointer → dispatcher packet register CE |
+| 8 | 1,671 | 2,445 | 124 | 0 | 72.627 MHz | 23.268 ns | 0.313 ns | 0 / 0 ns | RX FIFO pointer → dispatcher packet register CE |
+| 16 | 1,830 | 2,718 | 124 | 0 | 82.566 MHz | 24.926 ns | 0.313 ns | 0 / 0 ns | loopback byte index → CRC register D |
+| 32 | 2,156 | 3,263 | 124 | 0 | 75.516 MHz | 23.795 ns | 0.313 ns | 0 / 0 ns | loopback byte index → CRC result D |
 
-The 32-symbol point closes the required 27 MHz operating clock but does not
-meet the preferred >50 MHz analysis goal. The scaling bottleneck is the
-per-symbol sequence/state update decode, not a failure of the 27 MHz target.
-The next optimization should pipeline or RAM-map that state update before
-raising `NUM_SYMBOLS` further. PR1014 remains present for `clk_d` and
-`spi_clk_d` at every point.
+The new 32-symbol point closes at 75.516 MHz, comfortably above both the
+40 MHz minimum and the preferred 50 MHz analysis goal. The old symbol/state
+write cone is no longer the top-level critical path; N32 is now limited by an
+existing loopback/CRC path. PR1014 remains present for `clk_d` and `spi_clk_d`
+at every point. The complete before/after matrix, including old `spi_clk`
+Fmax and logic levels, is in `docs/benchmarking.md`.
 
 ## Clock routing and PR1014
 
-The baseline Tang Nano 20K place-and-route report identifies the `clk27` timing path as the old RX-FIFO-to-`loopback_engine` response-packet cone. That report also emits PR1014 for the routed `clk_d` and `spi_clk_d` nets. The report places the onboard `clk` input on pin 4 with the device's `LPLL1_T_in` capability and shows the primary clock resource in use; the external `spi_clk` input is pin 25 and is not a dedicated clock input in this package. The current constraints preserve these physical mappings and do not force a speculative pin change or unsafe clock constraint. Recheck PR1014 on the final P&R run: it is a clock-input/topology warning, not evidence that the CRC FSM is combinationally unsafe. The permanent CDC constraint is the one-line clock-group exception in `fpga/constraints/tang_nano_20k.sdc`:
+The baseline Tang Nano 20K place-and-route report identified the N32 `clk27`
+path as the packet-dispatcher symbol register driving the market engine's
+per-symbol sequence-register clock enable. The final N32 path is instead in
+the existing loopback/CRC logic. The report also emits PR1014 for the routed
+`clk_d` and `spi_clk_d` nets. The report places the onboard `clk` input on pin
+4 with the device's `LPLL1_T_in` capability and shows the primary clock
+resource in use; the external `spi_clk` input is pin 25 and is not a dedicated
+clock input in this package. The current constraints preserve these physical
+mappings and do not force a speculative pin change or unsafe clock constraint.
+Recheck PR1014 on the final P&R run: it is a clock-input/topology warning, not
+evidence that the CRC FSM is combinationally unsafe. The permanent CDC
+constraint is the one-line clock-group exception in
+`fpga/constraints/tang_nano_20k.sdc`:
 
 ```tcl
 set_clock_groups -asynchronous -group [get_clocks {clk27}] -group [get_clocks {spi_clk}]

@@ -64,7 +64,7 @@ module tb_market_pipeline;
     wire [15:0] event_reject_symbol_id;
     wire [31:0] event_reject_sequence;
 
-    reg [255:0] packet_memory [0:2047];
+    reg [255:0] packet_memory [0:9999];
     integer event_count;
     integer event_index;
     reg [1023:0] event_file;
@@ -144,7 +144,7 @@ module tb_market_pipeline;
     initial begin
         if (!$value$plusargs("EVENT_FILE=%s", event_file)) $fatal(1, "EVENT_FILE plusarg is required");
         if (!$value$plusargs("EVENT_COUNT=%d", event_count)) $fatal(1, "EVENT_COUNT plusarg is required");
-        if (event_count > 2048) $fatal(1, "event count exceeds replay memory");
+        if (event_count > 10000) $fatal(1, "event count exceeds replay memory");
         $readmemh(event_file, packet_memory);
 
         #12;

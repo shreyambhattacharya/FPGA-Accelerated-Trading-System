@@ -80,7 +80,8 @@ module trading_spi_top #(
     localparam integer MARKET_FEATURE_BUS_W = 16 + 32 + 64 + 32 + 64 + 32 +
                                               64 + 1 + 64 + 1 + 65 + 1 +
                                               TRADE_ACC_W + 33 + 33 + 1 +
-                                              VWAP_ACC_W + VWAP_QTY_ACC_W + 1;
+                                              VWAP_ACC_W + VWAP_QTY_ACC_W + 1 +
+                                              32 + 64 + 96 + 32;
     wire market_feature_valid;
     wire market_feature_ready;
     wire [15:0] market_feature_symbol_id;
@@ -102,6 +103,10 @@ module trading_spi_top #(
     wire [VWAP_ACC_W-1:0] market_feature_vwap_sum_price_quantity;
     wire [VWAP_QTY_ACC_W-1:0] market_feature_vwap_sum_quantity;
     wire market_feature_vwap_valid;
+    wire [31:0] market_history_trade_probe;
+    wire [63:0] market_history_midpoint_probe;
+    wire [95:0] market_history_vwap_price_quantity_probe;
+    wire [31:0] market_history_vwap_quantity_probe;
     wire market_reject_pulse;
     wire [7:0] market_reject_reason;
     wire [15:0] market_reject_symbol_id;
@@ -126,7 +131,9 @@ module trading_spi_top #(
         market_feature_rolling_volume, market_feature_imbalance_numerator,
         market_feature_imbalance_denominator, market_feature_imbalance_valid,
         market_feature_vwap_sum_price_quantity,
-        market_feature_vwap_sum_quantity, market_feature_vwap_valid
+        market_feature_vwap_sum_quantity, market_feature_vwap_valid,
+        market_history_trade_probe, market_history_midpoint_probe,
+        market_history_vwap_price_quantity_probe, market_history_vwap_quantity_probe
     };
 
     spi_slave spi_slave_i (
@@ -258,6 +265,10 @@ module trading_spi_top #(
         .feature_vwap_sum_price_quantity(market_feature_vwap_sum_price_quantity),
         .feature_vwap_sum_quantity(market_feature_vwap_sum_quantity),
         .feature_vwap_valid(market_feature_vwap_valid),
+        .history_trade_probe(market_history_trade_probe),
+        .history_midpoint_probe(market_history_midpoint_probe),
+        .history_vwap_price_quantity_probe(market_history_vwap_price_quantity_probe),
+        .history_vwap_quantity_probe(market_history_vwap_quantity_probe),
         .event_reject_pulse(market_reject_pulse),
         .event_reject_reason(market_reject_reason),
         .event_reject_symbol_id(market_reject_symbol_id),

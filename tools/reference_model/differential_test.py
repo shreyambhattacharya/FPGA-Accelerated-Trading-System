@@ -152,11 +152,13 @@ def run(count: int = 1000, seed: int = 0x5EED, keep: bool = False) -> None:
             f"expected_count={len(expected)} actual_count={len(actual)}"
         )
 
+    accepted = sum(record[0] == "FEATURE" for record in actual)
+    rejected = sum(record[0] == "EVENT_REJECT" for record in actual)
+    dispatcher_errors = sum(record[0] == "DISPATCH_ERROR" for record in actual)
     print(
         f"differential_test: PASS events={len(events)} outputs={len(actual)} "
-        f"features={sum(record[0] == 'FEATURE' for record in actual)} "
-        f"rejections={sum(record[0] == 'EVENT_REJECT' for record in actual)} "
-        f"dispatch_errors={sum(record[0] == 'DISPATCH_ERROR' for record in actual)}"
+        f"accepted={accepted} rejected={rejected} "
+        f"dispatcher_errors={dispatcher_errors} mismatches=0"
     )
     if not keep:
         event_file.unlink(missing_ok=True)

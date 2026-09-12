@@ -15,6 +15,10 @@ The script runs the existing SPI/CDC/CRC/loopback regressions plus:
   isolation, zero quantity, ring fill/replacement, momentum warm-up/wrap,
   VWAP accumulator replacement, duplicate/stale/invalid sequence, invalid
   symbol/side, reset, and feature backpressure;
+- `tb_unsigned_divider.sv`: 10 directed divider/reset/busy cases plus 5,000
+  deterministic 101-bit-by-64-bit unsigned quotient cases;
+- `tb_market_latency.sv`: warm-up and fully warm feature-service latency with
+  all five normalized divide operations active;
 - `tb_market_parameter.sv`: compile/elaborate/run smoke points for
   `NUM_SYMBOLS=1,4,8,16,32`;
 - `tb_market_n32_stress.sv`: deterministic N32 round-robin, hot-symbol,
@@ -34,6 +38,12 @@ The same fixed seed (`0x5EED`) at 10,000 events produced exactly 9,032
 accepted feature records, 967 engine rejections, 1 dispatcher error, and 0
 mismatches. The counts are reported by the test, not substituted into the
 oracle to make a run pass.
+
+The normalized fields are compared as part of every feature tuple, including
+floor VWAP quotient, Q1.15 imbalance, signed bps x100 ratios, raw
+midpoint-minus-VWAP, and all validity flags. No 100,000-event replay was run
+because the 10,000-event run already exercises the same exact comparison while
+keeping the local Icarus regression practical.
 
 The N32 stressbench completed with:
 
@@ -61,9 +71,11 @@ using physical-IO-preserving wrappers. Reports stay under the ignored
 
 The final matrix has zero setup/hold TNS at both `clk27` and `spi_clk` for all
 four points. The post-P&R `clk27` Fmax values are 68.327, 72.627, 82.566, and
-75.516 MHz for N4/N8/N16/N32 respectively. The corresponding P&R logic levels
-are 8, 8, 7, and 7. It still reports PR1014 for generic routing of `clk_d` and
-`spi_clk_d`; this is documented in the bring-up guide and is not suppressed.
+75.516 MHz for the archived raw-feature build; the normalized-feature build
+measures 66.439, 62.427, 60.565, and 68.821 MHz for N4/N8/N16/N32. The
+normalized P&R logic levels are 19, 19, 21, and 20. It still reports PR1014
+for generic routing of `clk_d` and `spi_clk_d`; this is documented in the
+bring-up guide and is not suppressed.
 
 The host loopback regression also passed in its software transport mode:
 

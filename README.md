@@ -18,7 +18,7 @@ Tang Nano SPI slave -> SPI-domain RX FIFO -> 27 MHz packet dispatcher
   <- turnaround/response transfers remain available for diagnostic packets
 ```
 
-The packet format is fixed at 32 bytes, uses big-endian integer fields, and ends with CRC-8/ATM. The RTL is written in synthesizable SystemVerilog. The packet FIFOs are Gray-pointer asynchronous FIFOs with two-flop pointer synchronizers; SPI framing remains in the external SPI clock domain while validation, market-state updates, and diagnostic response generation run on the Tang Nano's onboard 27 MHz clock. The market engine uses integer micro-dollar prices, per-symbol sequence checks, quote/trade isolation, spread, midpoint, momentum, rolling volume, imbalance, and VWAP accumulators. Its market path is a serialized, registered read/modify/write pipeline with one shared 64x32 multiplier; it does not replicate feature engines per symbol. It emits no trading signals or broker orders. The host side is modern C++17 and uses Linux `spidev` when built and run on Raspberry Pi OS. A deterministic software transport and Python reference/differential model are included so protocol and market semantics can be exercised on a development PC without pretending that physical SPI was tested.
+The packet format is fixed at 32 bytes, uses big-endian integer fields, and ends with CRC-8/ATM. The RTL is written in synthesizable SystemVerilog. The packet FIFOs are Gray-pointer asynchronous FIFOs with two-flop pointer synchronizers; SPI framing remains in the external SPI clock domain while validation, market-state updates, and diagnostic response generation run on the Tang Nano's onboard 27 MHz clock. The market engine uses integer micro-dollar prices, per-symbol sequence checks, quote/trade isolation, spread, midpoint, momentum, rolling volume, imbalance, and VWAP accumulators. Its market path is a serialized, registered read/modify/write pipeline with one shared 64x32 multiplier and one shared sequential 101/64 divider; it does not replicate feature engines per symbol. It emits the actual VWAP quotient, Q1.15 imbalance, spread/momentum/midpoint-VWAP basis-point fields scaled by 100, and explicit validity flags. Per-symbol state is held in a packed state bank with logical reset tracking, while the rolling histories remain independent. It emits no trading signals or broker orders. The host side is modern C++17 and uses Linux `spidev` when built and run on Raspberry Pi OS. A deterministic software transport and Python reference/differential model are included so protocol and market semantics can be exercised on a development PC without pretending that physical SPI was tested.
 
 ## Responsibilities and rationale
 
@@ -72,7 +72,7 @@ With Icarus Verilog installed:
 .\fpga\scripts\run_iverilog.ps1
 ```
 
-The script compiles the RTL and self-checking testbenches into a local build directory and runs them with `vvp`. The checks cover reset, valid loopback, sequential packets, checksum rejection, incomplete frames, mode-0 response timing, FIFO backpressure/overflow visibility, a 64-packet async FIFO stress test with unrelated clocks, standalone CRC vectors, directed market feature/edge-case tests, `NUM_SYMBOLS=1/4/8/16/32` elaboration, a 32-symbol state-isolation/backpressure/reset stressbench, and deterministic 1,000- and 10,000-event Python-versus-RTL differential replays. If Gowin is installed, `fpga/scripts/run_gowin_pnr.tcl` drives the default build and `fpga/scripts/run_gowin_matrix.ps1` drives the 4/8/16/32 resource/timing matrix through `gw_sh.exe`; implementation outputs remain ignored. The measured implementation matrix and the old 32-symbol bottleneck analysis are in [`docs/benchmarking.md`](docs/benchmarking.md).
+The script compiles the RTL and self-checking testbenches into a local build directory and runs them with `vvp`. The checks cover reset, valid loopback, sequential packets, checksum rejection, incomplete frames, mode-0 response timing, FIFO backpressure/overflow visibility, a 64-packet async FIFO stress test with unrelated clocks, standalone CRC vectors, the standalone 101/64 divider, directed raw and normalized market feature/edge-case tests, measured market latency, `NUM_SYMBOLS=1/4/8/16/32` elaboration, a 32-symbol state-isolation/backpressure/reset stressbench, and deterministic 1,000- and 10,000-event Python-versus-RTL differential replays. If Gowin is installed, `fpga/scripts/run_gowin_pnr.tcl` drives the default build and `fpga/scripts/run_gowin_matrix.ps1` drives the 4/8/16/32 resource/timing matrix through `gw_sh.exe`; implementation outputs remain ignored. The measured implementation matrix and the normalized feature-layer resource/timing delta are in [`docs/benchmarking.md`](docs/benchmarking.md).
 
 ## Hardware still required
 
@@ -90,7 +90,7 @@ The exact wiring, power precautions, Gowin IDE flow, and Raspberry Pi commands a
 
 1. Pi ↔ FPGA SPI foundation — complete
 2. Normalized quote/trade protocol and dispatcher — current milestone
-3. Parameterized market-state engine and integer features — current milestone
+3. Parameterized market-state engine, normalized fixed-point feature layer, and latency/resource characterization — current milestone
 4. C++ real-time market-data receiver
 5. Full Pi → FPGA event/feature path
 6. Configurable signal FSM

@@ -24,7 +24,11 @@ module market_state_engine #(
     parameter integer TRADE_ACC_W = 32 + ((TRADE_WINDOW <= 1) ? 1 : $clog2(TRADE_WINDOW)),
     parameter integer MOMENTUM_PTR_W = (MOMENTUM_WINDOW <= 1) ? 1 : $clog2(MOMENTUM_WINDOW),
     parameter integer VWAP_ACC_W = 96 + ((VWAP_WINDOW <= 1) ? 1 : $clog2(VWAP_WINDOW)),
-    parameter integer VWAP_QTY_ACC_W = 32 + ((VWAP_WINDOW <= 1) ? 1 : $clog2(VWAP_WINDOW))
+    parameter integer VWAP_QTY_ACC_W = 32 + ((VWAP_WINDOW <= 1) ? 1 : $clog2(VWAP_WINDOW)),
+    parameter integer PRICE_SCALE = 1000000,
+    parameter integer BPS_SCALE = 10000,
+    parameter integer BPS_OUTPUT_SCALE = 100,
+    parameter integer IMBALANCE_FRAC_BITS = 15
 ) (
     input  wire                    clk,
     input  wire                    reset_n,
@@ -61,6 +65,18 @@ module market_state_engine #(
     output wire [VWAP_ACC_W-1:0]   feature_vwap_sum_price_quantity,
     output wire [VWAP_QTY_ACC_W-1:0] feature_vwap_sum_quantity,
     output wire                    feature_vwap_valid,
+    output wire [63:0]              feature_vwap,
+    output wire                    feature_vwap_quotient_valid,
+    output wire signed [15:0]       feature_imbalance_normalized,
+    output wire                    feature_imbalance_normalized_valid,
+    output wire signed [31:0]       feature_spread_bps_x100,
+    output wire                    feature_spread_bps_x100_valid,
+    output wire signed [31:0]       feature_momentum_bps_x100,
+    output wire                    feature_momentum_bps_x100_valid,
+    output wire signed [64:0]       feature_midpoint_minus_vwap,
+    output wire                    feature_midpoint_minus_vwap_valid,
+    output wire signed [31:0]       feature_midpoint_minus_vwap_bps_x100,
+    output wire                    feature_midpoint_minus_vwap_bps_x100_valid,
 
     // Internal synthesis visibility taps; these are not protocol outputs.
     output wire [31:0]             history_trade_probe,
@@ -80,47 +96,51 @@ module market_state_engine #(
     localparam integer VWAP_PTR_W = (VWAP_WINDOW <= 1) ? 1 : $clog2(VWAP_WINDOW);
     localparam integer VWAP_COUNT_W = (VWAP_WINDOW <= 1) ? 1 : $clog2(VWAP_WINDOW + 1);
 
-    localparam [3:0] IDLE           = 4'd0;
-    localparam [3:0] READ_STATE     = 4'd1;
-    localparam [3:0] CHECK_SEQUENCE = 4'd2;
-    localparam [3:0] SET_HISTORY_ADDR = 4'd3;
-    localparam [3:0] READ_HISTORY   = 4'd4;
-    localparam [3:0] CAPTURE_HISTORY = 4'd5;
-    localparam [3:0] MULTIPLY_TRADE = 4'd6;
-    localparam [3:0] APPLY_EVENT    = 4'd7;
-    localparam [3:0] FEATURE_CALC   = 4'd8;
-    localparam [3:0] WRITE_STATE    = 4'd9;
-    localparam [3:0] WRITE_HISTORY  = 4'd10;
-    localparam [3:0] OUTPUT         = 4'd11;
+    // The selected-symbol transaction is serialized, so the per-symbol
+    // working state can be stored as one packed word.  Keeping one logical
+    // read/write bank avoids a NUM_SYMBOLS-wide register bank while leaving
+    // the event schedule and all feature semantics unchanged.
+    localparam integer STATE_BID_PRICE_LSB = 0;
+    localparam integer STATE_BID_QUANTITY_LSB = STATE_BID_PRICE_LSB + 64;
+    localparam integer STATE_ASK_PRICE_LSB = STATE_BID_QUANTITY_LSB + 32;
+    localparam integer STATE_ASK_QUANTITY_LSB = STATE_ASK_PRICE_LSB + 64;
+    localparam integer STATE_SEQUENCE_LSB = STATE_ASK_QUANTITY_LSB + 32;
+    localparam integer STATE_SEQUENCE_VALID_LSB = STATE_SEQUENCE_LSB + 32;
+    localparam integer STATE_BID_VALID_LSB = STATE_SEQUENCE_VALID_LSB + 1;
+    localparam integer STATE_ASK_VALID_LSB = STATE_BID_VALID_LSB + 1;
+    localparam integer STATE_ROLLING_VOLUME_LSB = STATE_ASK_VALID_LSB + 1;
+    localparam integer STATE_TRADE_PTR_LSB = STATE_ROLLING_VOLUME_LSB + TRADE_ACC_W;
+    localparam integer STATE_TRADE_COUNT_LSB = STATE_TRADE_PTR_LSB + TRADE_PTR_W;
+    localparam integer STATE_MIDPOINT_PTR_LSB = STATE_TRADE_COUNT_LSB + TRADE_COUNT_W;
+    localparam integer STATE_MIDPOINT_COUNT_LSB = STATE_MIDPOINT_PTR_LSB + MOMENTUM_PTR_W;
+    localparam integer STATE_VWAP_SUM_PQ_LSB = STATE_MIDPOINT_COUNT_LSB + MOMENTUM_COUNT_W;
+    localparam integer STATE_VWAP_SUM_Q_LSB = STATE_VWAP_SUM_PQ_LSB + VWAP_ACC_W;
+    localparam integer STATE_VWAP_PTR_LSB = STATE_VWAP_SUM_Q_LSB + VWAP_QTY_ACC_W;
+    localparam integer STATE_VWAP_COUNT_LSB = STATE_VWAP_PTR_LSB + VWAP_PTR_W;
+    localparam integer STATE_BANK_W = STATE_VWAP_COUNT_LSB + VWAP_COUNT_W;
 
-    reg [3:0] state = IDLE;
+    localparam [4:0] IDLE           = 5'd0;
+    localparam [4:0] READ_STATE     = 5'd1;
+    localparam [4:0] CHECK_SEQUENCE = 5'd2;
+    localparam [4:0] SET_HISTORY_ADDR = 5'd3;
+    localparam [4:0] READ_HISTORY   = 5'd4;
+    localparam [4:0] CAPTURE_HISTORY = 5'd5;
+    localparam [4:0] MULTIPLY_TRADE = 5'd6;
+    localparam [4:0] APPLY_EVENT    = 5'd7;
+    localparam [4:0] FEATURE_CALC   = 5'd8;
+    localparam [4:0] NORMALIZE_START = 5'd9;
+    localparam [4:0] NORMALIZE_WAIT = 5'd10;
+    localparam [4:0] WRITE_STATE    = 5'd11;
+    localparam [4:0] WRITE_HISTORY  = 5'd12;
+    localparam [4:0] OUTPUT         = 5'd13;
 
-    // Per-symbol state bank. These values are intentionally registers: the
-    // working read/modify/write transaction needs all fields together, while
-    // the larger circular histories below remain separate inference targets.
-    reg [63:0] best_bid_price [0:NUM_SYMBOLS-1];
-    reg [31:0] best_bid_quantity [0:NUM_SYMBOLS-1];
-    reg [63:0] best_ask_price [0:NUM_SYMBOLS-1];
-    reg [31:0] best_ask_quantity [0:NUM_SYMBOLS-1];
-    reg [63:0] last_trade_price [0:NUM_SYMBOLS-1];
-    reg [31:0] last_trade_quantity [0:NUM_SYMBOLS-1];
-    reg [7:0] last_trade_side [0:NUM_SYMBOLS-1];
-    reg [63:0] last_timestamp_ns [0:NUM_SYMBOLS-1];
-    reg [31:0] last_sequence_number [0:NUM_SYMBOLS-1];
-    reg sequence_valid [0:NUM_SYMBOLS-1];
-    reg bid_valid [0:NUM_SYMBOLS-1];
-    reg ask_valid [0:NUM_SYMBOLS-1];
-    reg trade_valid [0:NUM_SYMBOLS-1];
+    reg [4:0] state = IDLE;
 
-    reg [TRADE_ACC_W-1:0] rolling_trade_volume [0:NUM_SYMBOLS-1];
-    reg [TRADE_PTR_W-1:0] trade_write_ptr [0:NUM_SYMBOLS-1];
-    reg [TRADE_COUNT_W-1:0] trade_valid_count [0:NUM_SYMBOLS-1];
-    reg [MOMENTUM_PTR_W-1:0] midpoint_write_ptr [0:NUM_SYMBOLS-1];
-    reg [MOMENTUM_COUNT_W-1:0] midpoint_valid_count [0:NUM_SYMBOLS-1];
-    reg [VWAP_ACC_W-1:0] vwap_sum_price_quantity [0:NUM_SYMBOLS-1];
-    reg [VWAP_QTY_ACC_W-1:0] vwap_sum_quantity [0:NUM_SYMBOLS-1];
-    reg [VWAP_PTR_W-1:0] vwap_write_ptr [0:NUM_SYMBOLS-1];
-    reg [VWAP_COUNT_W-1:0] vwap_valid_count [0:NUM_SYMBOLS-1];
+    // One packed logical word per symbol.  The validity bitmap gives reset
+    // semantics without requiring a full-width memory clear, allowing the
+    // bank to remain a compact implementation target on Gowin devices.
+    (* keep = "true" *) reg [STATE_BANK_W-1:0] state_bank [0:NUM_SYMBOLS-1];
+    reg state_initialized [0:NUM_SYMBOLS-1];
 
     // Banked circular histories. Named read signals are captured before
     // arithmetic, isolating the dynamic bank access from the feature cone.
@@ -133,9 +153,7 @@ module market_state_engine #(
 
     reg [15:0] event_symbol_id_reg;
     reg [SYMBOL_ID_W-1:0] event_symbol_index_reg;
-    reg [NUM_SYMBOLS-1:0] event_symbol_onehot_reg;
     reg [7:0] event_type_reg;
-    reg [63:0] event_timestamp_reg;
     reg [63:0] event_price_reg;
     reg [31:0] event_quantity_reg;
     reg [7:0] event_side_reg;
@@ -149,15 +167,10 @@ module market_state_engine #(
     reg [31:0] work_bid_quantity;
     reg [63:0] work_ask_price;
     reg [31:0] work_ask_quantity;
-    reg [63:0] work_last_trade_price;
-    reg [31:0] work_last_trade_quantity;
-    reg [7:0] work_last_trade_side;
-    reg [63:0] work_last_timestamp_ns;
     reg [31:0] work_last_sequence_number;
     reg work_sequence_valid;
     reg work_bid_valid;
     reg work_ask_valid;
-    reg work_trade_valid;
     reg [TRADE_ACC_W-1:0] work_rolling_trade_volume;
     reg [TRADE_PTR_W-1:0] work_trade_write_ptr;
     reg [TRADE_COUNT_W-1:0] work_trade_valid_count;
@@ -168,6 +181,36 @@ module market_state_engine #(
     reg [VWAP_PTR_W-1:0] work_vwap_write_ptr;
     reg [VWAP_COUNT_W-1:0] work_vwap_valid_count;
 
+    always @* begin
+        work_state_word = {STATE_BANK_W{1'b0}};
+        work_state_word[STATE_BID_PRICE_LSB +: 64] = work_bid_price;
+        work_state_word[STATE_BID_QUANTITY_LSB +: 32] = work_bid_quantity;
+        work_state_word[STATE_ASK_PRICE_LSB +: 64] = work_ask_price;
+        work_state_word[STATE_ASK_QUANTITY_LSB +: 32] = work_ask_quantity;
+        work_state_word[STATE_SEQUENCE_LSB +: 32] = work_last_sequence_number;
+        work_state_word[STATE_SEQUENCE_VALID_LSB] = work_sequence_valid;
+        work_state_word[STATE_BID_VALID_LSB] = work_bid_valid;
+        work_state_word[STATE_ASK_VALID_LSB] = work_ask_valid;
+        work_state_word[STATE_ROLLING_VOLUME_LSB +: TRADE_ACC_W] =
+            work_rolling_trade_volume;
+        work_state_word[STATE_TRADE_PTR_LSB +: TRADE_PTR_W] =
+            work_trade_write_ptr;
+        work_state_word[STATE_TRADE_COUNT_LSB +: TRADE_COUNT_W] =
+            work_trade_valid_count;
+        work_state_word[STATE_MIDPOINT_PTR_LSB +: MOMENTUM_PTR_W] =
+            work_midpoint_write_ptr;
+        work_state_word[STATE_MIDPOINT_COUNT_LSB +: MOMENTUM_COUNT_W] =
+            work_midpoint_valid_count;
+        work_state_word[STATE_VWAP_SUM_PQ_LSB +: VWAP_ACC_W] =
+            work_vwap_sum_price_quantity;
+        work_state_word[STATE_VWAP_SUM_Q_LSB +: VWAP_QTY_ACC_W] =
+            work_vwap_sum_quantity;
+        work_state_word[STATE_VWAP_PTR_LSB +: VWAP_PTR_W] =
+            work_vwap_write_ptr;
+        work_state_word[STATE_VWAP_COUNT_LSB +: VWAP_COUNT_W] =
+            work_vwap_valid_count;
+    end
+
     // Registered history read terms and their write addresses.
     reg [31:0] old_trade_quantity_reg;
     reg [63:0] old_midpoint_reg;
@@ -177,6 +220,10 @@ module market_state_engine #(
     reg [MOMENTUM_PTR_W-1:0] midpoint_history_write_ptr_reg;
     reg [VWAP_PTR_W-1:0] vwap_history_write_ptr_reg;
     reg [63:0] current_midpoint_reg;
+
+    wire [STATE_BANK_W-1:0] selected_state_word =
+        state_bank[event_symbol_index_reg];
+    reg [STATE_BANK_W-1:0] work_state_word;
 
     wire quotes_valid;
 
@@ -200,6 +247,18 @@ module market_state_engine #(
     reg [VWAP_ACC_W-1:0] feature_vwap_sum_price_quantity_reg;
     reg [VWAP_QTY_ACC_W-1:0] feature_vwap_sum_quantity_reg;
     reg feature_vwap_valid_reg;
+    reg [63:0] feature_vwap_reg;
+    reg feature_vwap_quotient_valid_reg;
+    reg signed [15:0] feature_imbalance_normalized_reg;
+    reg feature_imbalance_normalized_valid_reg;
+    reg signed [31:0] feature_spread_bps_x100_reg;
+    reg feature_spread_bps_x100_valid_reg;
+    reg signed [31:0] feature_momentum_bps_x100_reg;
+    reg feature_momentum_bps_x100_valid_reg;
+    reg signed [64:0] feature_midpoint_minus_vwap_reg;
+    reg feature_midpoint_minus_vwap_valid_reg;
+    reg signed [31:0] feature_midpoint_minus_vwap_bps_x100_reg;
+    reg feature_midpoint_minus_vwap_bps_x100_valid_reg;
 
     wire event_accepted = event_valid && event_ready;
     wire event_symbol_valid = (event_symbol_id < NUM_SYMBOLS);
@@ -261,6 +320,59 @@ module market_state_engine #(
     wire [32:0] imbalance_denominator =
         {1'b0, work_bid_quantity} + {1'b0, work_ask_quantity};
 
+    wire normalizer_start = (state == NORMALIZE_START);
+    wire normalizer_done;
+    wire [63:0] normalizer_vwap;
+    wire normalizer_vwap_valid;
+    wire signed [15:0] normalizer_imbalance_normalized;
+    wire normalizer_imbalance_normalized_valid;
+    wire signed [31:0] normalizer_spread_bps_x100;
+    wire normalizer_spread_bps_x100_valid;
+    wire signed [31:0] normalizer_momentum_bps_x100;
+    wire normalizer_momentum_bps_x100_valid;
+    wire signed [64:0] normalizer_midpoint_minus_vwap;
+    wire normalizer_midpoint_minus_vwap_valid;
+    wire signed [31:0] normalizer_midpoint_minus_vwap_bps_x100;
+    wire normalizer_midpoint_minus_vwap_bps_x100_valid;
+
+    feature_normalizer #(
+        .VWAP_ACC_W(VWAP_ACC_W),
+        .VWAP_QTY_ACC_W(VWAP_QTY_ACC_W),
+        .BPS_SCALE(BPS_SCALE),
+        .BPS_OUTPUT_SCALE(BPS_OUTPUT_SCALE),
+        .IMBALANCE_FRAC_BITS(IMBALANCE_FRAC_BITS)
+    ) feature_normalizer_i (
+        .clk(clk),
+        .reset_n(reset_n),
+        .start(normalizer_start),
+        .raw_spread(feature_spread_reg),
+        .raw_spread_valid(feature_spread_valid_reg),
+        .raw_midpoint(feature_midpoint_reg),
+        .raw_midpoint_valid(feature_midpoint_valid_reg),
+        .raw_momentum(feature_momentum_reg),
+        .raw_momentum_valid(feature_momentum_valid_reg),
+        .raw_momentum_reference(old_midpoint_reg),
+        .raw_imbalance_numerator(feature_imbalance_numerator_reg),
+        .raw_imbalance_denominator(feature_imbalance_denominator_reg),
+        .raw_imbalance_valid(feature_imbalance_valid_reg),
+        .raw_vwap_sum_price_quantity(feature_vwap_sum_price_quantity_reg),
+        .raw_vwap_sum_quantity(feature_vwap_sum_quantity_reg),
+        .raw_vwap_valid(feature_vwap_valid_reg),
+        .done(normalizer_done),
+        .vwap(normalizer_vwap),
+        .vwap_valid(normalizer_vwap_valid),
+        .imbalance_normalized(normalizer_imbalance_normalized),
+        .imbalance_normalized_valid(normalizer_imbalance_normalized_valid),
+        .spread_bps_x100(normalizer_spread_bps_x100),
+        .spread_bps_x100_valid(normalizer_spread_bps_x100_valid),
+        .momentum_bps_x100(normalizer_momentum_bps_x100),
+        .momentum_bps_x100_valid(normalizer_momentum_bps_x100_valid),
+        .midpoint_minus_vwap(normalizer_midpoint_minus_vwap),
+        .midpoint_minus_vwap_valid(normalizer_midpoint_minus_vwap_valid),
+        .midpoint_minus_vwap_bps_x100(normalizer_midpoint_minus_vwap_bps_x100),
+        .midpoint_minus_vwap_bps_x100_valid(normalizer_midpoint_minus_vwap_bps_x100_valid)
+    );
+
     assign event_ready = (state == IDLE) && !feature_valid_reg;
     assign feature_valid = feature_valid_reg;
     assign feature_symbol_id = feature_symbol_id_reg;
@@ -282,6 +394,18 @@ module market_state_engine #(
     assign feature_vwap_sum_price_quantity = feature_vwap_sum_price_quantity_reg;
     assign feature_vwap_sum_quantity = feature_vwap_sum_quantity_reg;
     assign feature_vwap_valid = feature_vwap_valid_reg;
+    assign feature_vwap = feature_vwap_reg;
+    assign feature_vwap_quotient_valid = feature_vwap_quotient_valid_reg;
+    assign feature_imbalance_normalized = feature_imbalance_normalized_reg;
+    assign feature_imbalance_normalized_valid = feature_imbalance_normalized_valid_reg;
+    assign feature_spread_bps_x100 = feature_spread_bps_x100_reg;
+    assign feature_spread_bps_x100_valid = feature_spread_bps_x100_valid_reg;
+    assign feature_momentum_bps_x100 = feature_momentum_bps_x100_reg;
+    assign feature_momentum_bps_x100_valid = feature_momentum_bps_x100_valid_reg;
+    assign feature_midpoint_minus_vwap = feature_midpoint_minus_vwap_reg;
+    assign feature_midpoint_minus_vwap_valid = feature_midpoint_minus_vwap_valid_reg;
+    assign feature_midpoint_minus_vwap_bps_x100 = feature_midpoint_minus_vwap_bps_x100_reg;
+    assign feature_midpoint_minus_vwap_bps_x100_valid = feature_midpoint_minus_vwap_bps_x100_valid_reg;
     assign history_trade_probe = trade_history_read;
     assign history_midpoint_probe = midpoint_history_read;
     assign history_vwap_price_quantity_probe = vwap_price_quantity_history_read;
@@ -293,9 +417,7 @@ module market_state_engine #(
             state <= IDLE;
             event_symbol_id_reg <= 16'd0;
             event_symbol_index_reg <= {SYMBOL_ID_W{1'b0}};
-            event_symbol_onehot_reg <= {NUM_SYMBOLS{1'b0}};
             event_type_reg <= 8'd0;
-            event_timestamp_reg <= 64'd0;
             event_price_reg <= 64'd0;
             event_quantity_reg <= 32'd0;
             event_side_reg <= 8'd0;
@@ -314,15 +436,10 @@ module market_state_engine #(
             work_bid_quantity <= 32'd0;
             work_ask_price <= 64'd0;
             work_ask_quantity <= 32'd0;
-            work_last_trade_price <= 64'd0;
-            work_last_trade_quantity <= 32'd0;
-            work_last_trade_side <= 8'd0;
-            work_last_timestamp_ns <= 64'd0;
             work_last_sequence_number <= 32'd0;
             work_sequence_valid <= 1'b0;
             work_bid_valid <= 1'b0;
             work_ask_valid <= 1'b0;
-            work_trade_valid <= 1'b0;
             work_rolling_trade_volume <= {TRADE_ACC_W{1'b0}};
             work_trade_write_ptr <= {TRADE_PTR_W{1'b0}};
             work_trade_valid_count <= {TRADE_COUNT_W{1'b0}};
@@ -352,34 +469,27 @@ module market_state_engine #(
             feature_vwap_sum_price_quantity_reg <= {VWAP_ACC_W{1'b0}};
             feature_vwap_sum_quantity_reg <= {VWAP_QTY_ACC_W{1'b0}};
             feature_vwap_valid_reg <= 1'b0;
+            feature_vwap_reg <= 64'd0;
+            feature_vwap_quotient_valid_reg <= 1'b0;
+            feature_imbalance_normalized_reg <= 16'sd0;
+            feature_imbalance_normalized_valid_reg <= 1'b0;
+            feature_spread_bps_x100_reg <= 32'sd0;
+            feature_spread_bps_x100_valid_reg <= 1'b0;
+            feature_momentum_bps_x100_reg <= 32'sd0;
+            feature_momentum_bps_x100_valid_reg <= 1'b0;
+            feature_midpoint_minus_vwap_reg <= 65'sd0;
+            feature_midpoint_minus_vwap_valid_reg <= 1'b0;
+            feature_midpoint_minus_vwap_bps_x100_reg <= 32'sd0;
+            feature_midpoint_minus_vwap_bps_x100_valid_reg <= 1'b0;
             event_reject_pulse <= 1'b0;
             event_reject_reason <= 8'h00;
             event_reject_symbol_id <= 16'd0;
             event_reject_sequence <= 32'd0;
 
             for (symbol_index = 0; symbol_index < NUM_SYMBOLS; symbol_index = symbol_index + 1) begin
-                best_bid_price[symbol_index] <= 64'd0;
-                best_bid_quantity[symbol_index] <= 32'd0;
-                best_ask_price[symbol_index] <= 64'd0;
-                best_ask_quantity[symbol_index] <= 32'd0;
-                last_trade_price[symbol_index] <= 64'd0;
-                last_trade_quantity[symbol_index] <= 32'd0;
-                last_trade_side[symbol_index] <= 8'd0;
-                last_timestamp_ns[symbol_index] <= 64'd0;
-                last_sequence_number[symbol_index] <= 32'd0;
-                sequence_valid[symbol_index] <= 1'b0;
-                bid_valid[symbol_index] <= 1'b0;
-                ask_valid[symbol_index] <= 1'b0;
-                trade_valid[symbol_index] <= 1'b0;
-                rolling_trade_volume[symbol_index] <= {TRADE_ACC_W{1'b0}};
-                trade_write_ptr[symbol_index] <= {TRADE_PTR_W{1'b0}};
-                trade_valid_count[symbol_index] <= {TRADE_COUNT_W{1'b0}};
-                midpoint_write_ptr[symbol_index] <= {MOMENTUM_PTR_W{1'b0}};
-                midpoint_valid_count[symbol_index] <= {MOMENTUM_COUNT_W{1'b0}};
-                vwap_sum_price_quantity[symbol_index] <= {VWAP_ACC_W{1'b0}};
-                vwap_sum_quantity[symbol_index] <= {VWAP_QTY_ACC_W{1'b0}};
-                vwap_write_ptr[symbol_index] <= {VWAP_PTR_W{1'b0}};
-                vwap_valid_count[symbol_index] <= {VWAP_COUNT_W{1'b0}};
+                // Logical reset is represented by the bitmap; stale RAM
+                // words are ignored until their symbol is written again.
+                state_initialized[symbol_index] <= 1'b0;
             end
         end else begin
             event_reject_pulse <= 1'b0;
@@ -405,10 +515,7 @@ module market_state_engine #(
                         // directly into NUM_SYMBOLS bank enables.
                         event_symbol_id_reg <= event_symbol_id;
                         event_symbol_index_reg <= event_symbol_index;
-                        event_symbol_onehot_reg <=
-                            ({{(NUM_SYMBOLS-1){1'b0}}, 1'b1} << event_symbol_index);
                         event_type_reg <= event_type;
-                        event_timestamp_reg <= event_timestamp_ns;
                         event_price_reg <= event_price;
                         event_quantity_reg <= event_quantity;
                         event_side_reg <= event_side;
@@ -420,29 +527,55 @@ module market_state_engine #(
             end
 
             READ_STATE: begin
-                // One dynamic bank read is isolated from feature arithmetic.
-                work_bid_price <= best_bid_price[event_symbol_index_reg];
-                work_bid_quantity <= best_bid_quantity[event_symbol_index_reg];
-                work_ask_price <= best_ask_price[event_symbol_index_reg];
-                work_ask_quantity <= best_ask_quantity[event_symbol_index_reg];
-                work_last_trade_price <= last_trade_price[event_symbol_index_reg];
-                work_last_trade_quantity <= last_trade_quantity[event_symbol_index_reg];
-                work_last_trade_side <= last_trade_side[event_symbol_index_reg];
-                work_last_timestamp_ns <= last_timestamp_ns[event_symbol_index_reg];
-                work_last_sequence_number <= last_sequence_number[event_symbol_index_reg];
-                work_sequence_valid <= sequence_valid[event_symbol_index_reg];
-                work_bid_valid <= bid_valid[event_symbol_index_reg];
-                work_ask_valid <= ask_valid[event_symbol_index_reg];
-                work_trade_valid <= trade_valid[event_symbol_index_reg];
-                work_rolling_trade_volume <= rolling_trade_volume[event_symbol_index_reg];
-                work_trade_write_ptr <= trade_write_ptr[event_symbol_index_reg];
-                work_trade_valid_count <= trade_valid_count[event_symbol_index_reg];
-                work_midpoint_write_ptr <= midpoint_write_ptr[event_symbol_index_reg];
-                work_midpoint_valid_count <= midpoint_valid_count[event_symbol_index_reg];
-                work_vwap_sum_price_quantity <= vwap_sum_price_quantity[event_symbol_index_reg];
-                work_vwap_sum_quantity <= vwap_sum_quantity[event_symbol_index_reg];
-                work_vwap_write_ptr <= vwap_write_ptr[event_symbol_index_reg];
-                work_vwap_valid_count <= vwap_valid_count[event_symbol_index_reg];
+                // One dynamic packed-bank read is isolated from feature
+                // arithmetic.  Uninitialized words are logically zero after
+                // reset, as indicated by the per-symbol bitmap.
+                if (state_initialized[event_symbol_index_reg]) begin
+                    work_bid_price <= selected_state_word[STATE_BID_PRICE_LSB +: 64];
+                    work_bid_quantity <= selected_state_word[STATE_BID_QUANTITY_LSB +: 32];
+                    work_ask_price <= selected_state_word[STATE_ASK_PRICE_LSB +: 64];
+                    work_ask_quantity <= selected_state_word[STATE_ASK_QUANTITY_LSB +: 32];
+                    work_last_sequence_number <= selected_state_word[STATE_SEQUENCE_LSB +: 32];
+                    work_sequence_valid <= selected_state_word[STATE_SEQUENCE_VALID_LSB];
+                    work_bid_valid <= selected_state_word[STATE_BID_VALID_LSB];
+                    work_ask_valid <= selected_state_word[STATE_ASK_VALID_LSB];
+                    work_rolling_trade_volume <=
+                        selected_state_word[STATE_ROLLING_VOLUME_LSB +: TRADE_ACC_W];
+                    work_trade_write_ptr <=
+                        selected_state_word[STATE_TRADE_PTR_LSB +: TRADE_PTR_W];
+                    work_trade_valid_count <=
+                        selected_state_word[STATE_TRADE_COUNT_LSB +: TRADE_COUNT_W];
+                    work_midpoint_write_ptr <=
+                        selected_state_word[STATE_MIDPOINT_PTR_LSB +: MOMENTUM_PTR_W];
+                    work_midpoint_valid_count <=
+                        selected_state_word[STATE_MIDPOINT_COUNT_LSB +: MOMENTUM_COUNT_W];
+                    work_vwap_sum_price_quantity <=
+                        selected_state_word[STATE_VWAP_SUM_PQ_LSB +: VWAP_ACC_W];
+                    work_vwap_sum_quantity <=
+                        selected_state_word[STATE_VWAP_SUM_Q_LSB +: VWAP_QTY_ACC_W];
+                    work_vwap_write_ptr <=
+                        selected_state_word[STATE_VWAP_PTR_LSB +: VWAP_PTR_W];
+                    work_vwap_valid_count <=
+                        selected_state_word[STATE_VWAP_COUNT_LSB +: VWAP_COUNT_W];
+                end else begin
+                    work_bid_price <= 64'd0;
+                    work_bid_quantity <= 32'd0;
+                    work_ask_price <= 64'd0;
+                    work_ask_quantity <= 32'd0;
+                    work_last_sequence_number <= 32'd0;
+                    work_sequence_valid <= 1'b0;
+                    work_bid_valid <= 1'b0;
+                    work_ask_valid <= 1'b0;
+                    work_rolling_trade_volume <= {TRADE_ACC_W{1'b0}};
+                    work_trade_write_ptr <= {TRADE_PTR_W{1'b0}};
+                    work_trade_valid_count <= {TRADE_COUNT_W{1'b0}};
+                    work_midpoint_write_ptr <= {MOMENTUM_PTR_W{1'b0}};
+                    work_midpoint_valid_count <= {MOMENTUM_COUNT_W{1'b0}};
+                    work_vwap_sum_price_quantity <= {VWAP_ACC_W{1'b0}};
+                    work_vwap_sum_quantity <= {VWAP_QTY_ACC_W{1'b0}};
+                    work_vwap_write_ptr <= {VWAP_PTR_W{1'b0}};
+                    work_vwap_valid_count <= {VWAP_COUNT_W{1'b0}};
+                end
                 state <= CHECK_SEQUENCE;
             end
 
@@ -493,7 +626,6 @@ module market_state_engine #(
             APPLY_EVENT: begin
                 work_last_sequence_number <= event_sequence_reg;
                 work_sequence_valid <= 1'b1;
-                work_last_timestamp_ns <= event_timestamp_reg;
 
                 if (event_type_reg == `MSG_MARKET_QUOTE) begin
                     if (event_side_reg == 8'd0) begin
@@ -506,10 +638,6 @@ module market_state_engine #(
                         work_ask_valid <= 1'b1;
                     end
                 end else begin
-                    work_last_trade_price <= event_price_reg;
-                    work_last_trade_quantity <= event_quantity_reg;
-                    work_last_trade_side <= event_side_reg;
-                    work_trade_valid <= 1'b1;
                     work_rolling_trade_volume <= trade_volume_after_update;
                     work_trade_write_ptr <=
                         (work_trade_write_ptr == TRADE_WINDOW - 1) ?
@@ -562,38 +690,39 @@ module market_state_engine #(
                     if (work_midpoint_valid_count < MOMENTUM_WINDOW)
                         work_midpoint_valid_count <= work_midpoint_valid_count + 1'b1;
                 end
-                state <= WRITE_STATE;
+                state <= NORMALIZE_START;
+            end
+
+            NORMALIZE_START: begin
+                state <= NORMALIZE_WAIT;
+            end
+
+            NORMALIZE_WAIT: begin
+                if (normalizer_done) begin
+                    feature_vwap_reg <= normalizer_vwap;
+                    feature_vwap_quotient_valid_reg <= normalizer_vwap_valid;
+                    feature_imbalance_normalized_reg <= normalizer_imbalance_normalized;
+                    feature_imbalance_normalized_valid_reg <=
+                        normalizer_imbalance_normalized_valid;
+                    feature_spread_bps_x100_reg <= normalizer_spread_bps_x100;
+                    feature_spread_bps_x100_valid_reg <= normalizer_spread_bps_x100_valid;
+                    feature_momentum_bps_x100_reg <= normalizer_momentum_bps_x100;
+                    feature_momentum_bps_x100_valid_reg <= normalizer_momentum_bps_x100_valid;
+                    feature_midpoint_minus_vwap_reg <= normalizer_midpoint_minus_vwap;
+                    feature_midpoint_minus_vwap_valid_reg <= normalizer_midpoint_minus_vwap_valid;
+                    feature_midpoint_minus_vwap_bps_x100_reg <=
+                        normalizer_midpoint_minus_vwap_bps_x100;
+                    feature_midpoint_minus_vwap_bps_x100_valid_reg <=
+                        normalizer_midpoint_minus_vwap_bps_x100_valid;
+                    state <= WRITE_STATE;
+                end
             end
 
             WRITE_STATE: begin
-                // The symbol select is a registered one-hot value. This is a
-                // deliberate pipeline boundary for the NUM_SYMBOLS bank.
-                for (symbol_index = 0; symbol_index < NUM_SYMBOLS; symbol_index = symbol_index + 1) begin
-                    if (event_symbol_onehot_reg[symbol_index]) begin
-                        best_bid_price[symbol_index] <= work_bid_price;
-                        best_bid_quantity[symbol_index] <= work_bid_quantity;
-                        best_ask_price[symbol_index] <= work_ask_price;
-                        best_ask_quantity[symbol_index] <= work_ask_quantity;
-                        last_trade_price[symbol_index] <= work_last_trade_price;
-                        last_trade_quantity[symbol_index] <= work_last_trade_quantity;
-                        last_trade_side[symbol_index] <= work_last_trade_side;
-                        last_timestamp_ns[symbol_index] <= work_last_timestamp_ns;
-                        last_sequence_number[symbol_index] <= work_last_sequence_number;
-                        sequence_valid[symbol_index] <= work_sequence_valid;
-                        bid_valid[symbol_index] <= work_bid_valid;
-                        ask_valid[symbol_index] <= work_ask_valid;
-                        trade_valid[symbol_index] <= work_trade_valid;
-                        rolling_trade_volume[symbol_index] <= work_rolling_trade_volume;
-                        trade_write_ptr[symbol_index] <= work_trade_write_ptr;
-                        trade_valid_count[symbol_index] <= work_trade_valid_count;
-                        midpoint_write_ptr[symbol_index] <= work_midpoint_write_ptr;
-                        midpoint_valid_count[symbol_index] <= work_midpoint_valid_count;
-                        vwap_sum_price_quantity[symbol_index] <= work_vwap_sum_price_quantity;
-                        vwap_sum_quantity[symbol_index] <= work_vwap_sum_quantity;
-                        vwap_write_ptr[symbol_index] <= work_vwap_write_ptr;
-                        vwap_valid_count[symbol_index] <= work_vwap_valid_count;
-                    end
-                end
+                // The address is valid and registered before the write, so
+                // the whole selected-symbol word can use one memory write.
+                state_bank[event_symbol_index_reg] <= work_state_word;
+                state_initialized[event_symbol_index_reg] <= 1'b1;
                 state <= WRITE_HISTORY;
             end
 

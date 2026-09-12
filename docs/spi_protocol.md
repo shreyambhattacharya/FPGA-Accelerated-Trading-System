@@ -38,8 +38,8 @@ unsigned quantity, byte 24 is side (`0=bid/seller-side`, `1=ask/buyer-side`),
 and byte 25–28 is the per-symbol sequence. Byte 4–11 is normalized
 nanoseconds and byte 29–30 is reserved flags.
 
-Quotes update only the selected book side. Trades update last trade, rolling
-volume, and VWAP accumulators and never replace bid/ask. Supported starter
+Quotes update only the selected book side. Trades update rolling volume and
+VWAP accumulators and never replace bid/ask. Supported starter
 IDs are `0=SPY`, `1=QQQ`, `2=NVDA`, and `3=AMD`; the RTL accepts IDs below the
 configured `NUM_SYMBOLS` and rejects others explicitly.
 

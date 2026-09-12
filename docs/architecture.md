@@ -21,7 +21,11 @@ do not enter market state.
 
 The starter symbol table is numeric and parameterized: `0=SPY`, `1=QQQ`,
 `2=NVDA`, and `3=AMD`. `NUM_SYMBOLS` can be changed without changing the
-packet format or physical interface.
+packet format or physical interface. Each accepted feature record now also
+contains the exact rolling VWAP quotient, normalized Q1.15 quote imbalance,
+spread bps x100, momentum bps x100, and midpoint-minus-VWAP raw/bps fields;
+these are internal feature-bus fields until a later result/CSR packet is
+defined.
 
 ## Measured N32 bottleneck and refactor
 
@@ -45,7 +49,8 @@ The new market engine is serialized and registered:
 ```text
 IDLE -> READ_STATE -> CHECK_SEQUENCE -> SET_HISTORY_ADDR
      -> READ_HISTORY -> CAPTURE_HISTORY -> [MULTIPLY_TRADE]
-     -> APPLY_EVENT -> FEATURE_CALC -> WRITE_STATE
+     -> APPLY_EVENT -> FEATURE_CALC -> NORMALIZE_START
+     -> NORMALIZE_WAIT -> WRITE_STATE
      -> WRITE_HISTORY -> OUTPUT
 ```
 
@@ -57,40 +62,62 @@ working values instead of a live 32-way array read feeding the feature cone.
 `WRITE_STATE` commits only the selected bank. The longer schedule is an
 intentional latency/area/timing tradeoff.
 
-The per-symbol quote/trade/sequence state, valid bits, rolling accumulators,
-pointers, and counts remain registers. This gives the single-event
-read/modify/write transaction a coherent view without adding multi-port RAM
-scheduling. The four circular histories remain separate banked arrays with one
-registered read and one write at the commit stage.
+The selected symbol's quote/sequence state, valid bits, rolling accumulators,
+pointers, and counts are packed into one logical per-symbol state word. A
+reset bitmap provides logical-zero semantics without clearing every memory
+word. This keeps the single-event read/modify/write transaction coherent while
+allowing Gowin to map the bank compactly. The four circular histories remain
+separate banked arrays with one registered read and one write at the commit
+stage; their contents and replacement semantics are unchanged.
 
-Gowin logs RAM extraction for `trade_quantity_history`, `midpoint_history`,
-`vwap_price_quantity_history`, and `vwap_quantity_history`, but the final
-post-P&R mapping is the source of truth: the N32 synthesis report says
-`BSRAM 0/46`, and the market-engine hierarchy has no BSRAM/SSRAM count. The
-124 `SSRAM(RAM16)` blocks in P&R are the existing RX/TX async FIFO storage,
-not verified market-history BSRAM. The banked form is retained because the
-flattened-address and explicit-wrapper experiments did not improve this
-target's mapping; the limitation is documented rather than hidden.
+Gowin logs RAM extraction for `state_bank`, `trade_quantity_history`,
+`midpoint_history`, `vwap_price_quantity_history`, and
+`vwap_quantity_history`. The final N32 post-P&R mapping uses 11 BSRAM and 324
+`SSRAM(RAM16)` resources; the state bank and history memories are now compact
+memory targets rather than a NUM_SYMBOLS-wide flip-flop bank. The protocol
+FIFOs and history contents remain intact.
 
 There is one shared, event-serialized unsigned `64 x 32 -> 96` multiplier in
-`MULTIPLY_TRADE`, and no per-symbol multipliers, feature engines, or dividers.
-Gowin reports 0 DSP blocks; the product uses fabric logic. VWAP quotient
-division remains outside this milestone.
+`MULTIPLY_TRADE`, and one shared sequential unsigned divider in
+`feature_normalizer.sv`. The default divider is 101-bit numerator by 64-bit
+denominator, iterates once per numerator bit, and is scheduled across VWAP,
+imbalance, spread, momentum, and midpoint-minus-VWAP operations. Bps scaling is
+staged before the divide; invalid or zero-denominator operations exit early.
+No per-symbol divider or normalized feature engine is instantiated.
+
+The internal normalized feature fields are:
+
+| Field | Representation | Validity |
+| --- | --- | --- |
+| VWAP quotient | unsigned 64-bit | rolling quantity sum is nonzero and divider completes |
+| normalized imbalance | signed 16-bit Q1.15 | safe two-sided quote and quantity denominator nonzero |
+| spread bps x100 | signed 32-bit | safe quote and midpoint nonzero |
+| momentum bps x100 | signed 32-bit | momentum warm-up complete and reference midpoint nonzero |
+| midpoint-minus-VWAP | signed 65-bit raw plus signed 32-bit bps x100 | raw requires quote plus VWAP; bps also requires nonzero VWAP |
+
+The divider's `done` is captured before state/history commit, so the external
+feature valid/ready contract remains registered and stable under backpressure.
+For the default windows, the latency testbench measured 224 `clk27` cycles for
+a warm two-sided quote, 536 cycles for a fully warm trade, and 535 cycles for a
+fully warm quote with all five divide operations active. Exact latency varies
+with feature validity because skipped operations cost only scheduler cycles;
+the steady-state event rate is correspondingly data-dependent.
 
 ## Timing-hardened packet validation
 
 The loopback stage validates and generates CRC-8/ATM values with the standalone `fpga/rtl/protocol/crc8_engine.sv`. It accepts one byte per `clk27` cycle and consumes the first 31 bytes of each 32-byte packet; the final byte is the transmitted CRC. The request and response CRC streams are separated by registered FSM states, so the old full-packet combinational CRC/response cone is no longer a single-cycle `clk27` path. The engine reports `done` after the final byte edge and holds the result until the next stream.
 
 At 27 MHz, each 31-byte CRC stream takes 31 system-clock cycles (about 1.15
-us). The serialized market engine asserts a feature for a quote 10 `clk27`
-edges after acceptance and for a trade 11 edges after acceptance. With
-`feature_ready=1`, the next accepted event can arrive after 12 quote cycles
-or 13 trade cycles, which is a theoretical engine bound of 2.25 Mquote/s or
-2.077 Mtrade/s. Backpressure holds the registered feature and deasserts
-`event_ready`; these rates exclude SPI, FIFO, dispatcher, host, and future
-consumer costs. Market packets do not create a loopback response; the existing
-three-transfer request/turnaround/response framing remains available for
-diagnostics and future result packets.
+us). The normalized market engine now asserts a feature only after the shared
+divider schedule completes. With `feature_ready=1`, the latency testbench
+measured 224 `clk27` cycles for a warm two-sided quote, 536 cycles for a fully
+warm trade, and 535 cycles for a fully warm quote with all five divide
+operations active. Invalid operations take the early-exit path, so exact
+latency is data-dependent. Backpressure holds the registered feature and
+deasserts `event_ready`; these rates exclude SPI, FIFO, dispatcher, host, and
+future consumer costs. Market packets do not create a loopback response; the
+existing three-transfer request/turnaround/response framing remains available
+for diagnostics and future result packets.
 
 ## Pi responsibilities
 
@@ -100,9 +127,10 @@ The Raspberry Pi 5 is the SPI master. It will own Linux networking, TLS/WebSocke
 
 The FPGA is the deterministic data-plane accelerator. This stage updates
 per-symbol quote/trade state and calculates spread, midpoint, momentum,
-rolling volume, signed quote imbalance, and VWAP numerator/denominator
-accumulators. It deliberately emits no trading signal, strategy decision, risk
-approval, broker order, or live-trading action.
+rolling volume, signed quote imbalance, VWAP numerator/denominator
+accumulators, VWAP quotient, and normalized bps/imbalance features. It
+deliberately emits no trading signal, strategy decision, risk approval, broker
+order, or live-trading action.
 
 ## Market-state semantics
 
@@ -113,8 +141,8 @@ is rejected as duplicate, and a lower sequence is rejected as stale. Sequence
 wrap is not supported in this milestone.
 
 Quotes with side `0` update only the bid; side `1` updates only the ask.
-Trades update last-trade state, rolling volume, and VWAP accumulators but never
-overwrite either quote side. A quote is usable only when both sides are valid
+Trades update rolling volume and VWAP accumulators but never overwrite either
+quote side. A quote is usable only when both sides are valid
 and `ask >= bid`; crossed or incomplete quotes retain their raw sides but do
 not produce spread/midpoint/imbalance or append a momentum observation. Each
 accepted event then calculates a feature record; a trade also observes the
@@ -124,8 +152,14 @@ Trade volume uses a parameterized circular window (default 32). Midpoint
 history uses a circular window (default 16) and momentum becomes valid only
 after that many valid midpoint observations. VWAP uses a circular window
 (default 32), replacing old `price*quantity` and quantity terms without
-recomputing the window. The output exposes the accumulators; division is left
-to a later consumer.
+recomputing the window. The exact VWAP quotient is valid when the rolling
+quantity sum is nonzero. Normalized imbalance is signed Q1.15 and is valid
+only for a safe quote with nonzero total quantity. Spread bps x100 requires a
+safe quote with nonzero midpoint; momentum bps x100 requires momentum warm-up
+and a nonzero reference midpoint. Midpoint-minus-VWAP raw delta requires both
+a safe quote and valid VWAP; its bps form additionally requires nonzero VWAP.
+All normalized outputs are registered and zero with valid deasserted when
+their prerequisite is absent.
 
 ## Clocking note
 

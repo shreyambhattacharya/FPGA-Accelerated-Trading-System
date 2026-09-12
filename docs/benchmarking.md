@@ -10,11 +10,13 @@ rejected by sequence/symbol/side policy, and a feature record is registered.
 The feature record is held when `feature_ready` is low. A host round-trip
 number must not be interpreted as market-feature latency.
 
-The serialized engine accepts the next quote after 12 `clk27` cycles or the
-next trade after 13 cycles when the feature consumer is always ready. These
-are theoretical RTL bounds of 2,250,000 quotes/s and 2,076,923 trades/s at
-27 MHz, excluding SPI wire time, FIFO/dispatcher occupancy, host scheduling,
-and future consumers.
+The archived raw-feature engine accepted the next quote after 12 `clk27`
+cycles or the next trade after 13 cycles when the feature consumer was always
+ready. Those were theoretical raw-feature bounds of 2,250,000 quotes/s and
+2,076,923 trades/s at 27 MHz. The normalized feature layer has a
+data-dependent divider schedule, so its measured service latencies are listed
+in the current implementation section below; all figures exclude SPI wire
+time, FIFO/dispatcher occupancy, host scheduling, and future consumers.
 
 The recorded software-loopback result is labeled `mode=SIMULATION`; the
 host's `mode=REAL_HARDWARE` is reserved for the Linux spidev path. FPGA RTL
@@ -38,13 +40,15 @@ rtt_ns: min=400 p50=500 p95=500 p99=500 max=1700 average_us=0.4584
 This is a reproducible PC result for packet serialization and the software
 transport, not a measurement of a physical Pi↔Tang Nano link.
 
-## Before/after Gowin matrix
+## Archived raw-feature before/after Gowin matrix
 
-The baseline is the measured matrix from commit `651fc38`. The new values are
-from the final Gowin V1.9.11.03 Education run on `GW2AR-LV18QN88C8/I7`, with
-the same constraints and physical pins. `Fmax` and logic levels are the P&R
-report's `clk27` values; setup/hold slack is the worst path in the same P&R
-report. Both setup and hold TNS are 0.000 ns at both clocks for every point.
+The baseline is the measured matrix from commit `651fc38`, and the archived
+new values are the raw-feature implementation through commit `f0cabb3`. The
+normalized-feature results are listed in the current section below. Both runs
+use Gowin V1.9.11.03 Education on `GW2AR-LV18QN88C8/I7`, with the same
+constraints and physical pins. `Fmax` and logic levels are the P&R report's
+`clk27` values; setup/hold slack is the worst path in the same P&R report.
+Both setup and hold TNS are 0.000 ns at both clocks for every archived point.
 
 | Symbols | Old `clk27` Fmax | New `clk27` Fmax | Old setup/hold slack | New setup/hold slack | Old LUT / FF | New LUT / FF | Old BSRAM* | New BSRAM | Old P&R RAM16 | New P&R RAM16 | Old DSP / New DSP |
 | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -64,7 +68,7 @@ column is the vendor's total `SSRAM(RAM16)` resource. The old N32 synthesis
 hierarchy separately recorded 6 BSRAM blocks in the market engine; the final
 N32 synthesis report records 0 market BSRAM and `BSRAM 0/46` overall.
 
-The new critical paths are:
+The archived raw-feature critical paths were:
 
 | Symbols | New P&R critical path |
 | ---: | --- |
@@ -73,8 +77,8 @@ The new critical paths are:
 | 16 | `impl/loopback_engine_i/byte_index_4_s1/Q -> impl/loopback_engine_i/crc8_engine_i/crc_reg_3_s0/D` |
 | 32 | `impl/loopback_engine_i/byte_index_3_s1/Q -> impl/loopback_engine_i/crc8_engine_i/result_7_s0/D` |
 
-The N32 market-state path is no longer the limiting top-level path. The new
-N32 point uses 2,156 LUTs, 3,263 FFs, 182 ALU resources, 124 RAM16 FIFO
+The archived raw-feature N32 market-state path was no longer the limiting
+top-level path. That archived N32 point used 2,156 LUTs, 3,263 FFs, 182 ALU resources, 124 RAM16 FIFO
 resources, and 0 DSPs: 15% of device logic and 21% of FF capacity. The
 synthesis report shows `BSRAM 0/46`; 12,487 FFs and 17,654 logic resources
 remain, and all 46 BSRAM blocks remain unused. The histories are RAM
@@ -83,11 +87,46 @@ as BSRAM in the final target report.
 
 ## Interpretation
 
-The N32 improvement is architectural, not a claim that every matrix point
+The archived N32 improvement is architectural, not a claim that every matrix point
 must improve monotonically. N4 and N8 are now dominated by fixed transport
 and dispatcher/CRC placement, while N16/N32 no longer expose the old
 symbol-dependent state-write cone. The extra market-engine cycles are the
 latency cost for a shared arithmetic path and registered state access. The
 27 MHz target has 48.516 MHz of Fmax margin at N32, but future logic must be
-budgeted against the 75.516 MHz implementation result rather than assuming
+budgeted against the archived 75.516 MHz implementation result rather than assuming
 the entire margin is free.
+
+## Normalized feature-layer update
+
+The normalized feature layer was measured with Gowin V1.9.11.03 Education on
+`GW2AR-LV18QN88C8/I7`, using the same 27 MHz/5 MHz constraints and physical
+pins. The feature layer adds one shared 101-bit-by-64-bit sequential divider,
+staged bps scaling, registered normalized outputs, and a packed per-symbol
+state bank. The four history windows and the 32-byte protocol are unchanged.
+
+| Symbols | Logic / device | FF / device | LUT + ALU | BSRAM | P&R RAM16 | DSP | `clk27` Fmax | setup / hold slack |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 4 | 6,264 / 20,736 (31%) | 4,447 / 15,750 (29%) | 3,530 + 1,390 | 7 / 46 | 224 | 4.5 / 24 | 66.439 MHz | 21.986 / 0.074 ns |
+| 8 | 6,264 / 20,736 (31%) | 4,452 / 15,750 (29%) | 3,530 + 1,390 | 7 / 46 | 224 | 4.5 / 24 | 62.427 MHz | 21.018 / 0.198 ns |
+| 16 | 6,164 / 20,736 (30%) | 4,461 / 15,750 (29%) | 3,430 + 1,390 | 7 / 46 | 224 | 4.5 / 24 | 60.565 MHz | 20.526 / 0.074 ns |
+| 32 | 7,316 / 20,736 (36%) | 4,478 / 15,750 (29%) | 3,982 + 1,390 | 11 / 46 | 324 | 4.5 / 24 | 68.821 MHz | 22.507 / 0.074 ns |
+
+All four points have zero setup and hold TNS. The N32 normalized build is
+comfortably above the 27 MHz target and above the preferred 60 MHz analysis
+goal. Its worst setup path is the staged bps scale from
+`feature_normalizer_i/scale_input_reg` to `prepared_numerator_reg`, with
+22.507 ns slack. The N32 `spi_clk` report is 103.255 MHz.
+
+Relative to the previously pushed raw-feature N32 implementation (2,156 logic
+resources, 3,263 FF, 0 BSRAM, 124 RAM16, 0 DSP), the normalized design uses
+7,316 logic resources, 4,478 FF, 11 BSRAM, 324 RAM16, and 4.5 DSP-equivalent
+resources. This is the measured cost of retaining exact VWAP/normalization
+arithmetic on the Tang Nano target; the packed state bank is what keeps the
+32-symbol build below the 15,750-FF device limit. The BSRAM count is no longer
+zero, while the history windows themselves remain logically unchanged.
+
+The divider schedule is data-dependent. The dedicated latency testbench
+measured 224 cycles for a warm two-sided quote, 536 cycles for a fully warm
+trade, and 535 cycles for a fully warm quote with all five divide operations
+active. The result is a feature-service measurement, not an SPI wire or host
+round-trip measurement.

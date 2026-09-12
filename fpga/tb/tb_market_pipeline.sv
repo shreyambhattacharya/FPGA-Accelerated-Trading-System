@@ -59,6 +59,18 @@ module tb_market_pipeline;
     wire [VWAP_ACC_W-1:0] feature_vwap_sum_price_quantity;
     wire [VWAP_QTY_ACC_W-1:0] feature_vwap_sum_quantity;
     wire feature_vwap_valid;
+    wire [63:0] feature_vwap;
+    wire feature_vwap_quotient_valid;
+    wire signed [15:0] feature_imbalance_normalized;
+    wire feature_imbalance_normalized_valid;
+    wire signed [31:0] feature_spread_bps_x100;
+    wire feature_spread_bps_x100_valid;
+    wire signed [31:0] feature_momentum_bps_x100;
+    wire feature_momentum_bps_x100_valid;
+    wire signed [64:0] feature_midpoint_minus_vwap;
+    wire feature_midpoint_minus_vwap_valid;
+    wire signed [31:0] feature_midpoint_minus_vwap_bps_x100;
+    wire feature_midpoint_minus_vwap_bps_x100_valid;
     wire event_reject_pulse;
     wire [7:0] event_reject_reason;
     wire [15:0] event_reject_symbol_id;
@@ -115,6 +127,18 @@ module tb_market_pipeline;
         .feature_vwap_sum_price_quantity(feature_vwap_sum_price_quantity),
         .feature_vwap_sum_quantity(feature_vwap_sum_quantity),
         .feature_vwap_valid(feature_vwap_valid),
+        .feature_vwap(feature_vwap),
+        .feature_vwap_quotient_valid(feature_vwap_quotient_valid),
+        .feature_imbalance_normalized(feature_imbalance_normalized),
+        .feature_imbalance_normalized_valid(feature_imbalance_normalized_valid),
+        .feature_spread_bps_x100(feature_spread_bps_x100),
+        .feature_spread_bps_x100_valid(feature_spread_bps_x100_valid),
+        .feature_momentum_bps_x100(feature_momentum_bps_x100),
+        .feature_momentum_bps_x100_valid(feature_momentum_bps_x100_valid),
+        .feature_midpoint_minus_vwap(feature_midpoint_minus_vwap),
+        .feature_midpoint_minus_vwap_valid(feature_midpoint_minus_vwap_valid),
+        .feature_midpoint_minus_vwap_bps_x100(feature_midpoint_minus_vwap_bps_x100),
+        .feature_midpoint_minus_vwap_bps_x100_valid(feature_midpoint_minus_vwap_bps_x100_valid),
         .event_reject_pulse(event_reject_pulse), .event_reject_reason(event_reject_reason),
         .event_reject_symbol_id(event_reject_symbol_id), .event_reject_sequence(event_reject_sequence)
     );
@@ -128,7 +152,7 @@ module tb_market_pipeline;
             $display("EVENT_REJECT %02h %04h %08h", event_reject_reason,
                      event_reject_symbol_id, event_reject_sequence);
         if (feature_valid)
-            $display("FEATURE %04h %08h %016h %08h %016h %08h %016h %01h %016h %01h %017h %01h %0h %09h %09h %01h %0h %0h %01h",
+            $display("FEATURE %04h %08h %016h %08h %016h %08h %016h %01h %016h %01h %017h %01h %0h %09h %09h %01h %0h %0h %01h %016h %01h %04h %01h %08h %01h %08h %01h %017h %01h %08h %01h",
                      feature_symbol_id, feature_sequence,
                      feature_bid_price, feature_bid_quantity,
                      feature_ask_price, feature_ask_quantity,
@@ -138,7 +162,13 @@ module tb_market_pipeline;
                      feature_rolling_volume, feature_imbalance_numerator,
                      feature_imbalance_denominator, feature_imbalance_valid,
                      feature_vwap_sum_price_quantity, feature_vwap_sum_quantity,
-                     feature_vwap_valid);
+                     feature_vwap_valid, feature_vwap, feature_vwap_quotient_valid,
+                     feature_imbalance_normalized, feature_imbalance_normalized_valid,
+                     feature_spread_bps_x100, feature_spread_bps_x100_valid,
+                     feature_momentum_bps_x100, feature_momentum_bps_x100_valid,
+                     feature_midpoint_minus_vwap, feature_midpoint_minus_vwap_valid,
+                     feature_midpoint_minus_vwap_bps_x100,
+                     feature_midpoint_minus_vwap_bps_x100_valid);
     end
 
     initial begin

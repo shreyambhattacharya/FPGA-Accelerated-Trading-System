@@ -13,6 +13,8 @@ $sources = @(
     (Join-Path $repoRoot 'fpga\rtl\protocol\packet_dispatcher.sv'),
     (Join-Path $repoRoot 'fpga\rtl\spi\spi_slave.sv'),
     (Join-Path $repoRoot 'fpga\rtl\protocol\loopback_engine.sv'),
+    (Join-Path $repoRoot 'fpga\rtl\math\unsigned_divider.sv'),
+    (Join-Path $repoRoot 'fpga\rtl\math\feature_normalizer.sv'),
     (Join-Path $repoRoot 'fpga\rtl\market\market_state_engine.sv'),
     (Join-Path $repoRoot 'fpga\rtl\top\trading_spi_top.sv'),
     (Join-Path $repoRoot 'fpga\tb\tb_trading_spi_top.sv')
@@ -53,8 +55,19 @@ if ($LASTEXITCODE -ne 0) { throw "CRC engine simulation compilation failed" }
 vvp $crcOutput
 if ($LASTEXITCODE -ne 0) { throw "CRC engine simulation failed" }
 
+$dividerOutput = Join-Path $buildDir 'tb_unsigned_divider.vvp'
+iverilog -g2012 -Wall -s tb_unsigned_divider -o $dividerOutput `
+    (Join-Path $repoRoot 'fpga\rtl\math\unsigned_divider.sv') `
+    (Join-Path $repoRoot 'fpga\tb\tb_unsigned_divider.sv')
+if ($LASTEXITCODE -ne 0) { throw "Divider simulation compilation failed" }
+
+vvp $dividerOutput
+if ($LASTEXITCODE -ne 0) { throw "Divider simulation failed" }
+
 $marketOutput = Join-Path $buildDir 'tb_market_state_engine.vvp'
 iverilog -g2012 -Wall -I (Join-Path $repoRoot 'fpga\rtl\protocol') -s tb_market_state_engine -o $marketOutput `
+    (Join-Path $repoRoot 'fpga\rtl\math\unsigned_divider.sv') `
+    (Join-Path $repoRoot 'fpga\rtl\math\feature_normalizer.sv') `
     (Join-Path $repoRoot 'fpga\rtl\market\market_state_engine.sv') `
     (Join-Path $repoRoot 'fpga\tb\tb_market_state_engine.sv')
 if ($LASTEXITCODE -ne 0) { throw "Market-state simulation compilation failed" }
@@ -62,7 +75,20 @@ if ($LASTEXITCODE -ne 0) { throw "Market-state simulation compilation failed" }
 vvp $marketOutput
 if ($LASTEXITCODE -ne 0) { throw "Market-state simulation failed" }
 
+$latencyOutput = Join-Path $buildDir 'tb_market_latency.vvp'
+iverilog -g2012 -Wall -I (Join-Path $repoRoot 'fpga\rtl\protocol') -s tb_market_latency -o $latencyOutput `
+    (Join-Path $repoRoot 'fpga\rtl\math\unsigned_divider.sv') `
+    (Join-Path $repoRoot 'fpga\rtl\math\feature_normalizer.sv') `
+    (Join-Path $repoRoot 'fpga\rtl\market\market_state_engine.sv') `
+    (Join-Path $repoRoot 'fpga\tb\tb_market_latency.sv')
+if ($LASTEXITCODE -ne 0) { throw "Market-latency simulation compilation failed" }
+
+vvp $latencyOutput
+if ($LASTEXITCODE -ne 0) { throw "Market-latency simulation failed" }
+
 $parameterSource = @(
+    (Join-Path $repoRoot 'fpga\rtl\math\unsigned_divider.sv'),
+    (Join-Path $repoRoot 'fpga\rtl\math\feature_normalizer.sv'),
     (Join-Path $repoRoot 'fpga\rtl\market\market_state_engine.sv'),
     (Join-Path $repoRoot 'fpga\tb\tb_market_parameter.sv')
 )
@@ -79,6 +105,8 @@ foreach ($symbolCount in @(1, 4, 8, 16, 32)) {
 
 $n32StressOutput = Join-Path $buildDir 'tb_market_n32_stress.vvp'
 iverilog -g2012 -Wall -I (Join-Path $repoRoot 'fpga\rtl\protocol') -s tb_market_n32_stress -o $n32StressOutput `
+    (Join-Path $repoRoot 'fpga\rtl\math\unsigned_divider.sv') `
+    (Join-Path $repoRoot 'fpga\rtl\math\feature_normalizer.sv') `
     (Join-Path $repoRoot 'fpga\rtl\market\market_state_engine.sv') `
     (Join-Path $repoRoot 'fpga\tb\tb_market_n32_stress.sv')
 if ($LASTEXITCODE -ne 0) { throw "N32 stressbench compilation failed" }

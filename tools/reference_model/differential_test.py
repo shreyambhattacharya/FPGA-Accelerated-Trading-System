@@ -56,6 +56,18 @@ def _expected_outcomes(events, model: MarketModel) -> list[tuple]:
                     feature.vwap_sum_price_quantity,
                     feature.vwap_sum_quantity,
                     int(feature.vwap_valid),
+                    feature.vwap,
+                    int(feature.vwap_quotient_valid),
+                    feature.imbalance_normalized,
+                    int(feature.imbalance_normalized_valid),
+                    feature.spread_bps_x100,
+                    int(feature.spread_bps_x100_valid),
+                    feature.momentum_bps_x100,
+                    int(feature.momentum_bps_x100_valid),
+                    feature.midpoint_minus_vwap,
+                    int(feature.midpoint_minus_vwap_valid),
+                    feature.midpoint_minus_vwap_bps_x100,
+                    int(feature.midpoint_minus_vwap_bps_x100_valid),
                 )
             )
     return records
@@ -76,7 +88,7 @@ def _parse_rtl(stdout: str) -> list[tuple]:
                 raise AssertionError(f"malformed rejection record: {line}")
             records.append((fields[0], int(fields[1], 16), int(fields[2], 16), int(fields[3], 16)))
         elif fields[0] == "FEATURE":
-            if len(fields) != 20:
+            if len(fields) != 32:
                 raise AssertionError(f"malformed feature record ({len(fields) - 1} fields): {line}")
             values = [int(value, 16) for value in fields[1:]]
             records.append(
@@ -101,6 +113,18 @@ def _parse_rtl(stdout: str) -> list[tuple]:
                     values[16],
                     values[17],
                     values[18],
+                    values[19],
+                    values[20],
+                    _signed(values[21], 16),
+                    values[22],
+                    _signed(values[23], 32),
+                    values[24],
+                    _signed(values[25], 32),
+                    values[26],
+                    _signed(values[27], 65),
+                    values[28],
+                    _signed(values[29], 32),
+                    values[30],
                 )
             )
     return records
@@ -117,6 +141,8 @@ def run(count: int = 1000, seed: int = 0x5EED, keep: bool = False) -> None:
     sources = [
         REPO_ROOT / "fpga" / "rtl" / "protocol" / "crc8_engine.sv",
         REPO_ROOT / "fpga" / "rtl" / "protocol" / "packet_dispatcher.sv",
+        REPO_ROOT / "fpga" / "rtl" / "math" / "unsigned_divider.sv",
+        REPO_ROOT / "fpga" / "rtl" / "math" / "feature_normalizer.sv",
         REPO_ROOT / "fpga" / "rtl" / "market" / "market_state_engine.sv",
         REPO_ROOT / "fpga" / "tb" / "tb_market_pipeline.sv",
     ]

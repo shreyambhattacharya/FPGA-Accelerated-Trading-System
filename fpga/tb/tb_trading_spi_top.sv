@@ -184,9 +184,9 @@ module tb_trading_spi_top;
         spi_transfer(request, empty_response, empty_first_bit, empty_last_bit);
         spi_transfer(256'd0, empty_response, empty_first_bit, empty_last_bit);
         spi_transfer(256'd0, response, empty_first_bit, empty_last_bit);
-        if (dut.market_state_engine_i.best_bid_price[0] !== 64'd450000000 ||
-            dut.market_state_engine_i.best_bid_quantity[0] !== 32'd100 ||
-            dut.market_state_engine_i.bid_valid[0] !== 1'b1)
+        if (dut.market_state_engine_i.state_bank[0][0 +: 64] !== 64'd450000000 ||
+            dut.market_state_engine_i.state_bank[0][64 +: 32] !== 32'd100 ||
+            dut.market_state_engine_i.state_bank[0][225] !== 1'b1)
             $fatal(1, "market quote did not reach state engine through top");
 
         for (seq_index = 18; seq_index < 23; seq_index = seq_index + 1) begin

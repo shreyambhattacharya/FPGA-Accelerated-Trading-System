@@ -44,6 +44,18 @@ module tb_market_state_engine;
     wire [VWAP_ACC_W-1:0] feature_vwap_sum_price_quantity;
     wire [VWAP_QTY_ACC_W-1:0] feature_vwap_sum_quantity;
     wire feature_vwap_valid;
+    wire [63:0] feature_vwap;
+    wire feature_vwap_quotient_valid;
+    wire signed [15:0] feature_imbalance_normalized;
+    wire feature_imbalance_normalized_valid;
+    wire signed [31:0] feature_spread_bps_x100;
+    wire feature_spread_bps_x100_valid;
+    wire signed [31:0] feature_momentum_bps_x100;
+    wire feature_momentum_bps_x100_valid;
+    wire signed [64:0] feature_midpoint_minus_vwap;
+    wire feature_midpoint_minus_vwap_valid;
+    wire signed [31:0] feature_midpoint_minus_vwap_bps_x100;
+    wire feature_midpoint_minus_vwap_bps_x100_valid;
     wire event_reject_pulse;
     wire [7:0] event_reject_reason;
     wire [15:0] event_reject_symbol_id;
@@ -77,6 +89,18 @@ module tb_market_state_engine;
         .feature_vwap_sum_price_quantity(feature_vwap_sum_price_quantity),
         .feature_vwap_sum_quantity(feature_vwap_sum_quantity),
         .feature_vwap_valid(feature_vwap_valid),
+        .feature_vwap(feature_vwap),
+        .feature_vwap_quotient_valid(feature_vwap_quotient_valid),
+        .feature_imbalance_normalized(feature_imbalance_normalized),
+        .feature_imbalance_normalized_valid(feature_imbalance_normalized_valid),
+        .feature_spread_bps_x100(feature_spread_bps_x100),
+        .feature_spread_bps_x100_valid(feature_spread_bps_x100_valid),
+        .feature_momentum_bps_x100(feature_momentum_bps_x100),
+        .feature_momentum_bps_x100_valid(feature_momentum_bps_x100_valid),
+        .feature_midpoint_minus_vwap(feature_midpoint_minus_vwap),
+        .feature_midpoint_minus_vwap_valid(feature_midpoint_minus_vwap_valid),
+        .feature_midpoint_minus_vwap_bps_x100(feature_midpoint_minus_vwap_bps_x100),
+        .feature_midpoint_minus_vwap_bps_x100_valid(feature_midpoint_minus_vwap_bps_x100_valid),
         .event_reject_pulse(event_reject_pulse), .event_reject_reason(event_reject_reason),
         .event_reject_symbol_id(event_reject_symbol_id), .event_reject_sequence(event_reject_sequence)
     );
@@ -132,7 +156,10 @@ module tb_market_state_engine;
         send_event(`MSG_MARKET_QUOTE, 16'd0, 64'd100, 32'd10, 8'd0, 32'd1);
         if (feature_sequence !== 32'd1 || feature_bid_price !== 64'd100 ||
             feature_bid_quantity !== 32'd10 || feature_spread_valid ||
-            feature_midpoint_valid || feature_imbalance_valid)
+            feature_midpoint_valid || feature_imbalance_valid ||
+            feature_vwap_quotient_valid || feature_imbalance_normalized_valid ||
+            feature_spread_bps_x100_valid || feature_momentum_bps_x100_valid ||
+            feature_midpoint_minus_vwap_valid || feature_midpoint_minus_vwap_bps_x100_valid)
             $fatal(1, "first bid feature mismatch");
         consume_feature();
 
@@ -141,7 +168,10 @@ module tb_market_state_engine;
         if (!feature_spread_valid || feature_spread !== 64'd2 ||
             feature_midpoint !== 64'd101 || feature_imbalance_numerator !== -33'sd10 ||
             feature_imbalance_denominator !== 33'd30 || feature_rolling_volume !== 0 ||
-            feature_vwap_valid)
+            feature_vwap_valid || feature_spread_bps_x100 !== 32'sd19801 ||
+            !feature_spread_bps_x100_valid ||
+            feature_imbalance_normalized !== -16'sd10922 ||
+            !feature_imbalance_normalized_valid || feature_vwap_quotient_valid)
             $fatal(1, "two-sided quote feature mismatch");
         consume_feature();
 
@@ -150,7 +180,11 @@ module tb_market_state_engine;
         if (feature_bid_price !== 64'd100 || feature_ask_price !== 64'd102 ||
             feature_rolling_volume !== 38'd5 ||
             feature_vwap_sum_price_quantity !== 102'd505 ||
-            feature_vwap_sum_quantity !== 38'd5 || !feature_vwap_valid)
+            feature_vwap_sum_quantity !== 38'd5 || !feature_vwap_valid ||
+            feature_vwap !== 64'd101 || !feature_vwap_quotient_valid ||
+            !feature_midpoint_minus_vwap_valid || feature_midpoint_minus_vwap !== 65'sd0 ||
+            !feature_midpoint_minus_vwap_bps_x100_valid ||
+            feature_midpoint_minus_vwap_bps_x100 !== 32'sd0)
             $fatal(1, "trade isolation or accumulator mismatch");
         consume_feature();
 
@@ -158,7 +192,11 @@ module tb_market_state_engine;
         send_event(`MSG_MARKET_QUOTE, 16'd0, 64'd99, 32'd30, 8'd0, 32'd4);
         if (feature_ask_price !== 64'd102 || feature_spread !== 64'd3 ||
             feature_midpoint !== 64'd100 || feature_imbalance_numerator !== 33'sd10 ||
-            feature_imbalance_denominator !== 33'd50)
+            feature_imbalance_denominator !== 33'd50 ||
+            feature_spread_bps_x100 !== 32'sd30000 ||
+            feature_imbalance_normalized !== 16'sd6553 ||
+            feature_vwap !== 64'd101 || feature_midpoint_minus_vwap !== -65'sd1 ||
+            feature_midpoint_minus_vwap_bps_x100 !== -32'sd9900)
             $fatal(1, "quote side isolation mismatch");
         consume_feature();
 
@@ -201,6 +239,17 @@ module tb_market_state_engine;
         send_event(`MSG_MARKET_QUOTE, 16'd0, 64'd106, 32'd40, 8'd1, 32'd15);
         if (!feature_momentum_valid || feature_momentum !== 65'sd2)
             $fatal(1, "momentum ring replacement mismatch");
+        if (!feature_momentum_bps_x100_valid || feature_momentum_bps_x100 !== 32'sd20000 ||
+            feature_midpoint_minus_vwap !== 65'sd1 ||
+            feature_midpoint_minus_vwap_bps_x100 !== 32'sd9900)
+            $fatal(1, "positive normalized momentum or VWAP delta mismatch");
+        consume_feature();
+        send_event(`MSG_MARKET_QUOTE, 16'd0, 64'd90, 32'd40, 8'd0, 32'd16);
+        if (!feature_momentum_valid || feature_momentum !== -65'sd2 ||
+            !feature_momentum_bps_x100_valid || feature_momentum_bps_x100 !== -32'sd20000 ||
+            feature_midpoint_minus_vwap !== -65'sd3 ||
+            feature_midpoint_minus_vwap_bps_x100 !== -32'sd29702)
+            $fatal(1, "negative normalized momentum or VWAP delta mismatch");
         consume_feature();
 
         // Symbol isolation and the first event sequence rule.
@@ -219,6 +268,40 @@ module tb_market_state_engine;
         expect_reject(`STATUS_STALE_SEQ, 16'd1, 32'd99);
         send_event(`MSG_MARKET_QUOTE, 16'hFFFF, 64'd1, 32'd1, 8'd0, 32'd1);
         expect_reject(`STATUS_BAD_SYMBOL, 16'hFFFF, 32'd1);
+
+        // Weighted VWAP and equal midpoint/VWAP delta on an independent bank.
+        send_event(`MSG_MARKET_TRADE, 16'd3, 64'd100, 32'd2, 8'd0, 32'd1);
+        if (feature_vwap !== 64'd100 || feature_vwap_sum_price_quantity !== 102'd200 ||
+            feature_vwap_sum_quantity !== 38'd2 || !feature_vwap_quotient_valid)
+            $fatal(1, "first weighted VWAP mismatch");
+        consume_feature();
+        send_event(`MSG_MARKET_TRADE, 16'd3, 64'd110, 32'd1, 8'd1, 32'd2);
+        if (feature_vwap !== 64'd103 || feature_vwap_sum_price_quantity !== 102'd310 ||
+            feature_vwap_sum_quantity !== 38'd3)
+            $fatal(1, "weighted VWAP truncation mismatch");
+        consume_feature();
+        send_event(`MSG_MARKET_QUOTE, 16'd3, 64'd100, 32'd1, 8'd0, 32'd3);
+        consume_feature();
+        send_event(`MSG_MARKET_QUOTE, 16'd3, 64'd106, 32'd1, 8'd1, 32'd4);
+        if (feature_midpoint !== 64'd103 || feature_midpoint_minus_vwap !== 65'sd0 ||
+            !feature_midpoint_minus_vwap_valid ||
+            feature_midpoint_minus_vwap_bps_x100 !== 32'sd0 ||
+            !feature_midpoint_minus_vwap_bps_x100_valid ||
+            feature_imbalance_normalized !== 16'sd0)
+            $fatal(1, "equal midpoint/VWAP delta mismatch");
+        consume_feature();
+
+        // Zero-size top-of-book is a valid quote but has no imbalance
+        // denominator. The spread ratio remains valid because midpoint is
+        // non-zero; normalized imbalance must be explicitly invalid.
+        send_event(`MSG_MARKET_QUOTE, 16'd2, 64'd100, 32'd0, 8'd0, 32'd1);
+        consume_feature();
+        send_event(`MSG_MARKET_QUOTE, 16'd2, 64'd102, 32'd0, 8'd1, 32'd2);
+        if (!feature_spread_bps_x100_valid || feature_spread_bps_x100 !== 32'sd19801 ||
+            feature_imbalance_normalized_valid || feature_imbalance_normalized !== 16'sd0 ||
+            feature_vwap_quotient_valid || feature_midpoint_minus_vwap_valid)
+            $fatal(1, "zero-denominator normalized feature mismatch");
+        consume_feature();
 
         // Backpressure must hold a complete registered feature record.
         feature_ready = 1'b0;

@@ -12,7 +12,11 @@ module trading_spi_top #(
     parameter integer NUM_SYMBOLS = 4,
     parameter integer TRADE_WINDOW = 32,
     parameter integer MOMENTUM_WINDOW = 16,
-    parameter integer VWAP_WINDOW = 32
+    parameter integer VWAP_WINDOW = 32,
+    parameter integer PRICE_SCALE = 1000000,
+    parameter integer BPS_SCALE = 10000,
+    parameter integer BPS_OUTPUT_SCALE = 100,
+    parameter integer IMBALANCE_FRAC_BITS = 15
 ) (
     input  wire       clk,
     input  wire       spi_clk,
@@ -81,6 +85,8 @@ module trading_spi_top #(
                                               64 + 1 + 64 + 1 + 65 + 1 +
                                               TRADE_ACC_W + 33 + 33 + 1 +
                                               VWAP_ACC_W + VWAP_QTY_ACC_W + 1 +
+                                              64 + 1 + 16 + 1 + 32 + 1 + 32 + 1 +
+                                              65 + 1 + 32 + 1 +
                                               32 + 64 + 96 + 32;
     wire market_feature_valid;
     wire market_feature_ready;
@@ -103,6 +109,18 @@ module trading_spi_top #(
     wire [VWAP_ACC_W-1:0] market_feature_vwap_sum_price_quantity;
     wire [VWAP_QTY_ACC_W-1:0] market_feature_vwap_sum_quantity;
     wire market_feature_vwap_valid;
+    wire [63:0] market_feature_vwap;
+    wire market_feature_vwap_quotient_valid;
+    wire signed [15:0] market_feature_imbalance_normalized;
+    wire market_feature_imbalance_normalized_valid;
+    wire signed [31:0] market_feature_spread_bps_x100;
+    wire market_feature_spread_bps_x100_valid;
+    wire signed [31:0] market_feature_momentum_bps_x100;
+    wire market_feature_momentum_bps_x100_valid;
+    wire signed [64:0] market_feature_midpoint_minus_vwap;
+    wire market_feature_midpoint_minus_vwap_valid;
+    wire signed [31:0] market_feature_midpoint_minus_vwap_bps_x100;
+    wire market_feature_midpoint_minus_vwap_bps_x100_valid;
     wire [31:0] market_history_trade_probe;
     wire [63:0] market_history_midpoint_probe;
     wire [95:0] market_history_vwap_price_quantity_probe;
@@ -132,6 +150,13 @@ module trading_spi_top #(
         market_feature_imbalance_denominator, market_feature_imbalance_valid,
         market_feature_vwap_sum_price_quantity,
         market_feature_vwap_sum_quantity, market_feature_vwap_valid,
+        market_feature_vwap, market_feature_vwap_quotient_valid,
+        market_feature_imbalance_normalized, market_feature_imbalance_normalized_valid,
+        market_feature_spread_bps_x100, market_feature_spread_bps_x100_valid,
+        market_feature_momentum_bps_x100, market_feature_momentum_bps_x100_valid,
+        market_feature_midpoint_minus_vwap, market_feature_midpoint_minus_vwap_valid,
+        market_feature_midpoint_minus_vwap_bps_x100,
+        market_feature_midpoint_minus_vwap_bps_x100_valid,
         market_history_trade_probe, market_history_midpoint_probe,
         market_history_vwap_price_quantity_probe, market_history_vwap_quantity_probe
     };
@@ -230,7 +255,11 @@ module trading_spi_top #(
         .NUM_SYMBOLS(NUM_SYMBOLS),
         .TRADE_WINDOW(TRADE_WINDOW),
         .MOMENTUM_WINDOW(MOMENTUM_WINDOW),
-        .VWAP_WINDOW(VWAP_WINDOW)
+        .VWAP_WINDOW(VWAP_WINDOW),
+        .PRICE_SCALE(PRICE_SCALE),
+        .BPS_SCALE(BPS_SCALE),
+        .BPS_OUTPUT_SCALE(BPS_OUTPUT_SCALE),
+        .IMBALANCE_FRAC_BITS(IMBALANCE_FRAC_BITS)
     ) market_state_engine_i (
         .clk(clk),
         .reset_n(reset_n_int),
@@ -265,6 +294,18 @@ module trading_spi_top #(
         .feature_vwap_sum_price_quantity(market_feature_vwap_sum_price_quantity),
         .feature_vwap_sum_quantity(market_feature_vwap_sum_quantity),
         .feature_vwap_valid(market_feature_vwap_valid),
+        .feature_vwap(market_feature_vwap),
+        .feature_vwap_quotient_valid(market_feature_vwap_quotient_valid),
+        .feature_imbalance_normalized(market_feature_imbalance_normalized),
+        .feature_imbalance_normalized_valid(market_feature_imbalance_normalized_valid),
+        .feature_spread_bps_x100(market_feature_spread_bps_x100),
+        .feature_spread_bps_x100_valid(market_feature_spread_bps_x100_valid),
+        .feature_momentum_bps_x100(market_feature_momentum_bps_x100),
+        .feature_momentum_bps_x100_valid(market_feature_momentum_bps_x100_valid),
+        .feature_midpoint_minus_vwap(market_feature_midpoint_minus_vwap),
+        .feature_midpoint_minus_vwap_valid(market_feature_midpoint_minus_vwap_valid),
+        .feature_midpoint_minus_vwap_bps_x100(market_feature_midpoint_minus_vwap_bps_x100),
+        .feature_midpoint_minus_vwap_bps_x100_valid(market_feature_midpoint_minus_vwap_bps_x100_valid),
         .history_trade_probe(market_history_trade_probe),
         .history_midpoint_probe(market_history_midpoint_probe),
         .history_vwap_price_quantity_probe(market_history_vwap_price_quantity_probe),

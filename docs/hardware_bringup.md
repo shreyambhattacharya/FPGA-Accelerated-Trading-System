@@ -25,7 +25,7 @@ The external SPI mapping is the wiring contract for this project and must be cro
 
 1. Install the Gowin IDE/toolchain appropriate for the Tang Nano 20K and connect the board through its normal USB-C programming interface.
 2. Open `fpga/gowin/fpga_trading.gprj`.
-3. Confirm the project device is `GW2AR-18C` / `GW2AR-LV18QN88C8/I7`, the top module is `trading_spi_top`, and the source list includes the reset, async FIFO, SPI, `crc8_engine`, `packet_dispatcher`, `market_state_engine`, loopback, and top-level RTL files.
+3. Confirm the project device is `GW2AR-18C` / `GW2AR-LV18QN88C8/I7`, the top module is `trading_spi_top`, and the source list includes the reset, async FIFO, SPI, `crc8_engine`, `packet_dispatcher`, `unsigned_divider`, `feature_normalizer`, `market_state_engine`, loopback, and top-level RTL files.
 4. Set the HDL language option to **SystemVerilog 2017** (`sysv2017` / `sysv-2017`, depending on the IDE version). The checked-in `fpga/gowin/configure_project.tcl` contains the explicit `set_option -verilog_std sysv2017` setting; source it in the Gowin Tcl console or configure the same option in the project GUI. The `.gprj` remains in the vendor's portable project format.
 5. Confirm the project includes `fpga/constraints/tang_nano_20k.cst` and `fpga/constraints/tang_nano_20k.sdc`.
 6. Run synthesis and inspect the synthesis log. Do not proceed to place-and-route or program hardware while EX3209, EX2213, AG0100, or AG0101 warnings remain.
@@ -34,10 +34,11 @@ The external SPI mapping is the wiring contract for this project and must be cro
 
 The checked-in RTL was also exercised with GowinSynthesis and place-and-route
 when that vendor tool was available in the development environment. The CRC
-engine is a byte-per-system-clock datapath. Gowin logs the four market history
-arrays as RAM extraction candidates, but the final synthesis report maps
-`BSRAM 0/46`; the 124 P&R RAM16 resources are the existing RX/TX FIFO storage.
-Synthesis/P&R success is not evidence of physical Pi↔FPGA validation.
+engine is a byte-per-system-clock datapath. Gowin extracts the packed state
+bank and four market history arrays as memory candidates; the normalized N32
+build maps to `BSRAM 11/46`, `SSRAM(RAM16) 324`, and `DSP 4.5/24` while meeting
+the 27 MHz system-clock constraint. Synthesis/P&R success is not evidence of
+physical Pi↔FPGA validation.
 
 For a reproducible command-line implementation run, use the checked-in
 `fpga/scripts/run_gowin_pnr.tcl` with Gowin's `gw_sh.exe`. The local default
@@ -47,29 +48,31 @@ parameter matrix and its measured resource/timing results are recorded below.
 ### Gowin `NUM_SYMBOLS` matrix
 
 All points use the same 27 MHz `clk27`, 5 MHz `spi_clk`, constraints, and
-physical pins. `SSRAM(RAM16)` is the vendor report's block-memory resource;
-the implementation used no DSP blocks.
+physical pins. `SSRAM(RAM16)` and BSRAM are reported separately because the
+normalized design uses both memory classes; DSP usage is the vendor's
+fractional-equivalent count.
 
-| `NUM_SYMBOLS` | LUT | FF | RAM16/BRAM blocks | DSP | `clk27` Fmax | setup slack | hold slack | TNS setup/hold | critical `clk27` path |
+| `NUM_SYMBOLS` | LUT / ALU | FF | RAM16 / BSRAM blocks | DSP | `clk27` Fmax | setup slack | hold slack | TNS setup/hold | critical `clk27` path |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| 4 | 1,609 | 2,308 | 124 | 0 | 68.327 MHz | 22.402 ns | 0.313 ns | 0 / 0 ns | RX FIFO pointer → dispatcher packet register CE |
-| 8 | 1,671 | 2,445 | 124 | 0 | 72.627 MHz | 23.268 ns | 0.313 ns | 0 / 0 ns | RX FIFO pointer → dispatcher packet register CE |
-| 16 | 1,830 | 2,718 | 124 | 0 | 82.566 MHz | 24.926 ns | 0.313 ns | 0 / 0 ns | loopback byte index → CRC register D |
-| 32 | 2,156 | 3,263 | 124 | 0 | 75.516 MHz | 23.795 ns | 0.313 ns | 0 / 0 ns | loopback byte index → CRC result D |
+| 4 | 3,530 LUT / 1,390 ALU | 4,447 | 224 / 7 BSRAM | 4.5 | 66.439 MHz | 21.986 ns | 0.074 ns | 0 / 0 ns | normalizer scale input → prepared numerator |
+| 8 | 3,530 LUT / 1,390 ALU | 4,452 | 224 / 7 BSRAM | 4.5 | 62.427 MHz | 21.018 ns | 0.198 ns | 0 / 0 ns | normalizer scale input → prepared numerator |
+| 16 | 3,430 LUT / 1,390 ALU | 4,461 | 224 / 7 BSRAM | 4.5 | 60.565 MHz | 20.526 ns | 0.074 ns | 0 / 0 ns | normalizer scale input → prepared numerator |
+| 32 | 3,982 LUT / 1,390 ALU | 4,478 | 324 / 11 BSRAM | 4.5 | 68.821 MHz | 22.507 ns | 0.074 ns | 0 / 0 ns | normalizer scale input → prepared numerator |
 
-The new 32-symbol point closes at 75.516 MHz, comfortably above both the
-40 MHz minimum and the preferred 50 MHz analysis goal. The old symbol/state
-write cone is no longer the top-level critical path; N32 is now limited by an
-existing loopback/CRC path. PR1014 remains present for `clk_d` and `spi_clk_d`
-at every point. The complete before/after matrix, including old `spi_clk`
-Fmax and logic levels, is in `docs/benchmarking.md`.
+The normalized 32-symbol point closes at 68.821 MHz, above the preferred
+60 MHz analysis goal and the 27 MHz target. The critical path is the staged
+bps scaling step inside `feature_normalizer_i`; the old symbol/state write
+cone is not top-level limiting. PR1014 remains present for `clk_d` and
+`spi_clk_d` at every point. The archived raw-feature comparison and the
+normalized resource delta are in `docs/benchmarking.md`.
 
 ## Clock routing and PR1014
 
 The baseline Tang Nano 20K place-and-route report identified the N32 `clk27`
 path as the packet-dispatcher symbol register driving the market engine's
-per-symbol sequence-register clock enable. The final N32 path is instead in
-the existing loopback/CRC logic. The report also emits PR1014 for the routed
+per-symbol sequence-register clock enable. The archived raw-feature path was
+later in the existing loopback/CRC logic; the current normalized path is the
+staged bps scale in `feature_normalizer_i`. The report also emits PR1014 for the routed
 `clk_d` and `spi_clk_d` nets. The report places the onboard `clk` input on pin
 4 with the device's `LPLL1_T_in` capability and shows the primary clock
 resource in use; the external `spi_clk` input is pin 25 and is not a dedicated

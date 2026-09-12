@@ -32,6 +32,13 @@ STATUS_DUPLICATE_SEQ = 0xE5
 STATUS_STALE_SEQ = 0xE6
 STATUS_BAD_SIDE = 0xE7
 
+PRICE_SCALE = 1_000_000
+BPS_SCALE = 10_000
+BPS_OUTPUT_SCALE = 100
+IMBALANCE_FRAC_BITS = 15
+SIGNED_BPS_WIDTH = 32
+IMBALANCE_NORMALIZED_WIDTH = 16
+
 
 def crc8(body: bytes) -> int:
     """Return CRC-8/ATM for packet bytes 0..30."""
@@ -44,6 +51,21 @@ def crc8(body: bytes) -> int:
         for _ in range(8):
             crc = ((crc << 1) ^ 0x07) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
     return crc
+
+
+def _trunc_div_signed(numerator: int, denominator: int) -> int:
+    """Divide signed integers toward zero without using floating point."""
+
+    if denominator == 0:
+        raise ZeroDivisionError("signed division by zero")
+    magnitude = abs(numerator) // abs(denominator)
+    return -magnitude if (numerator < 0) != (denominator < 0) else magnitude
+
+
+def _saturate_signed(value: int, width: int) -> int:
+    minimum = -(1 << (width - 1))
+    maximum = (1 << (width - 1)) - 1
+    return min(max(value, minimum), maximum)
 
 
 @dataclass(frozen=True)
@@ -106,6 +128,18 @@ class FeatureSnapshot:
     vwap_sum_price_quantity: int
     vwap_sum_quantity: int
     vwap_valid: bool
+    vwap: int
+    vwap_quotient_valid: bool
+    imbalance_normalized: int
+    imbalance_normalized_valid: bool
+    spread_bps_x100: int
+    spread_bps_x100_valid: bool
+    momentum_bps_x100: int
+    momentum_bps_x100_valid: bool
+    midpoint_minus_vwap: int
+    midpoint_minus_vwap_valid: bool
+    midpoint_minus_vwap_bps_x100: int
+    midpoint_minus_vwap_bps_x100_valid: bool
 
 
 @dataclass(frozen=True)
@@ -127,11 +161,6 @@ class _SymbolState:
     ask_quantity: int = 0
     bid_valid: bool = False
     ask_valid: bool = False
-    last_trade_price: int = 0
-    last_trade_quantity: int = 0
-    last_trade_side: int = 0
-    trade_valid: bool = False
-    timestamp_ns: int = 0
     sequence: int = 0
     sequence_valid: bool = False
     trade_history: list[int] = field(default_factory=list)
@@ -158,13 +187,23 @@ class MarketModel:
         trade_window: int = 32,
         momentum_window: int = 16,
         vwap_window: int = 32,
+        price_scale: int = PRICE_SCALE,
+        bps_scale: int = BPS_SCALE,
+        bps_output_scale: int = BPS_OUTPUT_SCALE,
+        imbalance_frac_bits: int = IMBALANCE_FRAC_BITS,
     ) -> None:
         if min(num_symbols, trade_window, momentum_window, vwap_window) < 1:
             raise ValueError("all model dimensions must be positive")
+        if min(price_scale, bps_scale, bps_output_scale) < 1 or imbalance_frac_bits < 0:
+            raise ValueError("scaling parameters must be positive and frac bits non-negative")
         self.num_symbols = num_symbols
         self.trade_window = trade_window
         self.momentum_window = momentum_window
         self.vwap_window = vwap_window
+        self.price_scale = price_scale
+        self.bps_scale = bps_scale
+        self.bps_output_scale = bps_output_scale
+        self.imbalance_frac_bits = imbalance_frac_bits
         self.symbols = [
             _SymbolState(
                 trade_history=[0] * trade_window,
@@ -192,7 +231,6 @@ class MarketModel:
 
         state.sequence_valid = True
         state.sequence = event.sequence
-        state.timestamp_ns = event.timestamp_ns
 
         if event.message_type == MSG_MARKET_QUOTE:
             if event.side == 0:
@@ -204,10 +242,6 @@ class MarketModel:
                 state.ask_quantity = event.quantity
                 state.ask_valid = True
         else:
-            state.last_trade_price = event.price
-            state.last_trade_quantity = event.quantity
-            state.last_trade_side = event.side
-            state.trade_valid = True
             self._push_trade(state, event.quantity)
             self._push_vwap(state, event.price * event.quantity, event.quantity)
 
@@ -254,13 +288,17 @@ class MarketModel:
 
     def _feature(self, state: _SymbolState, event: MarketEvent) -> FeatureSnapshot:
         quotes_valid = state.bid_valid and state.ask_valid and state.ask_price >= state.bid_price
+        vwap_valid = state.vwap_sum_quantity != 0
+        vwap = state.vwap_sum_price_quantity // state.vwap_sum_quantity if vwap_valid else 0
+
         if quotes_valid:
             spread = state.ask_price - state.bid_price
             midpoint = (state.bid_price + state.ask_price) // 2
             imbalance_numerator = state.bid_quantity - state.ask_quantity
             imbalance_denominator = state.bid_quantity + state.ask_quantity
             momentum_valid = state.midpoint_count >= self.momentum_window
-            momentum = midpoint - state.midpoint_history[state.midpoint_ptr] if momentum_valid else 0
+            reference_midpoint = state.midpoint_history[state.midpoint_ptr] if momentum_valid else 0
+            momentum = midpoint - reference_midpoint if momentum_valid else 0
             state.midpoint_history[state.midpoint_ptr] = midpoint
             state.midpoint_ptr = (state.midpoint_ptr + 1) % self.momentum_window
             state.midpoint_count = min(state.midpoint_count + 1, self.momentum_window)
@@ -269,8 +307,60 @@ class MarketModel:
             midpoint = 0
             momentum = 0
             momentum_valid = False
+            reference_midpoint = 0
             imbalance_numerator = 0
             imbalance_denominator = 0
+
+        imbalance_normalized_valid = quotes_valid and imbalance_denominator != 0
+        imbalance_normalized = (
+            _saturate_signed(
+                _trunc_div_signed(
+                    imbalance_numerator * (1 << self.imbalance_frac_bits),
+                    imbalance_denominator,
+                ),
+                IMBALANCE_NORMALIZED_WIDTH,
+            )
+            if imbalance_normalized_valid
+            else 0
+        )
+
+        spread_bps_x100_valid = quotes_valid and midpoint != 0
+        spread_bps_x100 = (
+            _saturate_signed(
+                spread * self.bps_scale * self.bps_output_scale // midpoint,
+                SIGNED_BPS_WIDTH,
+            )
+            if spread_bps_x100_valid
+            else 0
+        )
+
+        momentum_bps_x100_valid = momentum_valid and reference_midpoint != 0
+        momentum_bps_x100 = (
+            _saturate_signed(
+                _trunc_div_signed(
+                    momentum * self.bps_scale * self.bps_output_scale,
+                    reference_midpoint,
+                ),
+                SIGNED_BPS_WIDTH,
+            )
+            if momentum_bps_x100_valid
+            else 0
+        )
+
+        midpoint_minus_vwap_valid = quotes_valid and vwap_valid
+        midpoint_minus_vwap = midpoint - vwap if midpoint_minus_vwap_valid else 0
+        midpoint_minus_vwap_bps_x100_valid = midpoint_minus_vwap_valid and vwap != 0
+        midpoint_minus_vwap_bps_x100 = (
+            _saturate_signed(
+                _trunc_div_signed(
+                    midpoint_minus_vwap * self.bps_scale * self.bps_output_scale,
+                    vwap,
+                ),
+                SIGNED_BPS_WIDTH,
+            )
+            if midpoint_minus_vwap_bps_x100_valid
+            else 0
+        )
 
         return FeatureSnapshot(
             symbol_id=event.symbol_id,
@@ -291,7 +381,19 @@ class MarketModel:
             imbalance_valid=quotes_valid,
             vwap_sum_price_quantity=state.vwap_sum_price_quantity,
             vwap_sum_quantity=state.vwap_sum_quantity,
-            vwap_valid=state.vwap_sum_quantity != 0,
+            vwap_valid=vwap_valid,
+            vwap=vwap,
+            vwap_quotient_valid=vwap_valid,
+            imbalance_normalized=imbalance_normalized,
+            imbalance_normalized_valid=imbalance_normalized_valid,
+            spread_bps_x100=spread_bps_x100,
+            spread_bps_x100_valid=spread_bps_x100_valid,
+            momentum_bps_x100=momentum_bps_x100,
+            momentum_bps_x100_valid=momentum_bps_x100_valid,
+            midpoint_minus_vwap=midpoint_minus_vwap,
+            midpoint_minus_vwap_valid=midpoint_minus_vwap_valid,
+            midpoint_minus_vwap_bps_x100=midpoint_minus_vwap_bps_x100,
+            midpoint_minus_vwap_bps_x100_valid=midpoint_minus_vwap_bps_x100_valid,
         )
 
 

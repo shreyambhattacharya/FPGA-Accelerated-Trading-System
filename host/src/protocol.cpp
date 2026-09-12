@@ -131,6 +131,10 @@ Packet make_status_response(const Packet& request, StatusCode status) {
     case StatusCode::BadSync: response.flags = 0x0002; break;
     case StatusCode::BadChecksum: response.flags = 0x0004; break;
     case StatusCode::BadType: response.flags = 0x0008; break;
+    case StatusCode::BadSymbol: response.flags = 0x0010; break;
+    case StatusCode::DuplicateSequence: response.flags = 0x0020; break;
+    case StatusCode::StaleSequence: response.flags = 0x0040; break;
+    case StatusCode::BadSide: response.flags = 0x0080; break;
     }
     response.checksum = 0;
     return response;

@@ -18,5 +18,9 @@
 `define STATUS_BAD_SYNC       8'hE1
 `define STATUS_BAD_CHECKSUM   8'hE2
 `define STATUS_BAD_TYPE       8'hE3
+`define STATUS_BAD_SYMBOL     8'hE4
+`define STATUS_DUPLICATE_SEQ  8'hE5
+`define STATUS_STALE_SEQ      8'hE6
+`define STATUS_BAD_SIDE       8'hE7
 
 `endif

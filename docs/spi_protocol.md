@@ -18,7 +18,7 @@ All multi-byte fields are unsigned unless noted and are transmitted most-signifi
 | 1 | 8 | message type | `0x01` quote, `0x02` trade, `0x03` control, `0x04` heartbeat, `0x05` signal, `0x06` status, `0x07` loopback |
 | 2–3 | 16 | symbol ID | Numeric ID; no ticker strings in RTL |
 | 4–11 | 64 | timestamp | Nanoseconds since Unix epoch for normalized events; opaque for loopback |
-| 12–19 | 64 | data | Price/data field; future market prices use a documented integer scale |
+| 12–19 | 64 | price/data | Price in micro-dollars for quote/trade events; opaque data for loopback |
 | 20–23 | 32 | quantity | Unsigned quantity/data field |
 | 24 | 8 | side/status | Side for market events; status code for responses |
 | 25–28 | 32 | sequence | Monotonically increasing host sequence number |
@@ -27,9 +27,26 @@ All multi-byte fields are unsigned unless noted and are transmitted most-signifi
 
 CRC-8/ATM parameters: polynomial `0x07`, initial value `0x00`, no reflection, no final XOR. For every input byte, XOR it into the CRC and process eight MSB-first shifts; if the old CRC MSB is one, XOR `0x07` after the shift. The checksum byte is excluded from the CRC input.
 
-## Message types
+## Market event types
 
-The reserved type values are stable now so the FPGA does not need to change when the event stream grows. This milestone implements `LOOPBACK` requests and `STATUS` responses.
+`MSG_MARKET_QUOTE` (`0x01`) and `MSG_MARKET_TRADE` (`0x02`) are normalized
+events produced by the Pi. The FPGA does not parse JSON, TCP, TLS, or broker
+frames.
+
+For both types, byte 12–19 is unsigned price in micro-dollars, byte 20–23 is
+unsigned quantity, byte 24 is side (`0=bid/seller-side`, `1=ask/buyer-side`),
+and byte 25–28 is the per-symbol sequence. Byte 4–11 is normalized
+nanoseconds and byte 29–30 is reserved flags.
+
+Quotes update only the selected book side. Trades update last trade, rolling
+volume, and VWAP accumulators and never replace bid/ask. Supported starter
+IDs are `0=SPY`, `1=QQQ`, `2=NVDA`, and `3=AMD`; the RTL accepts IDs below the
+configured `NUM_SYMBOLS` and rejects others explicitly.
+
+The dispatcher presents accepted quote/trade packets as a flat valid/ready
+record: type, symbol, timestamp, price, quantity, side, sequence, and flags.
+The market state engine returns a registered feature record with valid bits
+for quote-derived fields and momentum warm-up.
 
 ## Status codes
 
@@ -39,6 +56,10 @@ The reserved type values are stable now so the FPGA does not need to change when
 | `0xE1` | invalid sync/version |
 | `0xE2` | CRC/checksum failure |
 | `0xE3` | unsupported message type |
+| `0xE4` | symbol ID is outside `NUM_SYMBOLS` |
+| `0xE5` | duplicate sequence number |
+| `0xE6` | stale/lower sequence number |
+| `0xE7` | market side is not 0 or 1 |
 
 For a 32-byte malformed request, the FPGA copies the request's symbol, timestamp, data, quantity, and sequence fields into the response to simplify diagnostics. An incomplete CS-framed transfer is discarded by the per-frame reset and produces no packet; the next complete frame starts cleanly. No asynchronous incomplete-frame diagnostic is part of the production datapath.
 

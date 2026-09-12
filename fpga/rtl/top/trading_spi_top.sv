@@ -6,8 +6,14 @@
 //
 // clk is the onboard 27 MHz oscillator. SPI traffic remains in spi_clk; only
 // Gray-coded FIFO pointers cross between that domain and clk. All packet
-// validation and loopback processing runs synchronously at 27 MHz.
-module trading_spi_top (
+// validation, loopback processing, and market-state updates run synchronously
+// at 27 MHz.
+module trading_spi_top #(
+    parameter integer NUM_SYMBOLS = 4,
+    parameter integer TRADE_WINDOW = 32,
+    parameter integer MOMENTUM_WINDOW = 16,
+    parameter integer VWAP_WINDOW = 32
+) (
     input  wire       clk,
     input  wire       spi_clk,
     input  wire       spi_cs_n,
@@ -48,9 +54,80 @@ module trading_spi_top (
     wire [31:0] tx_fifo_underflow_count;
 
     wire system_packet_ready;
+    wire dispatcher_loopback_valid;
+    wire dispatcher_loopback_ready;
+    wire [`PACKET_BITS-1:0] dispatcher_loopback_packet;
+    wire dispatcher_status_override_valid;
+    wire [7:0] dispatcher_status_override;
+    wire dispatcher_event_valid;
+    wire dispatcher_event_ready;
+    wire [7:0] dispatcher_event_type;
+    wire [15:0] dispatcher_event_symbol_id;
+    wire [63:0] dispatcher_event_timestamp_ns;
+    wire [63:0] dispatcher_event_price;
+    wire [31:0] dispatcher_event_quantity;
+    wire [7:0] dispatcher_event_side;
+    wire [31:0] dispatcher_event_sequence;
+    wire [15:0] dispatcher_event_flags;
+    wire dispatcher_error_pulse;
+    wire [7:0] dispatcher_error_reason;
+    wire [15:0] dispatcher_error_symbol_id;
+    wire [31:0] dispatcher_error_sequence;
+
+    localparam integer TRADE_ACC_W = 32 + ((TRADE_WINDOW <= 1) ? 1 : $clog2(TRADE_WINDOW));
+    localparam integer VWAP_ACC_W = 96 + ((VWAP_WINDOW <= 1) ? 1 : $clog2(VWAP_WINDOW));
+    localparam integer VWAP_QTY_ACC_W = 32 + ((VWAP_WINDOW <= 1) ? 1 : $clog2(VWAP_WINDOW));
+    localparam integer MARKET_FEATURE_BUS_W = 16 + 32 + 64 + 32 + 64 + 32 +
+                                              64 + 1 + 64 + 1 + 65 + 1 +
+                                              TRADE_ACC_W + 33 + 33 + 1 +
+                                              VWAP_ACC_W + VWAP_QTY_ACC_W + 1;
+    wire market_feature_valid;
+    wire market_feature_ready;
+    wire [15:0] market_feature_symbol_id;
+    wire [31:0] market_feature_sequence;
+    wire [63:0] market_feature_bid_price;
+    wire [31:0] market_feature_bid_quantity;
+    wire [63:0] market_feature_ask_price;
+    wire [31:0] market_feature_ask_quantity;
+    wire [63:0] market_feature_spread;
+    wire market_feature_spread_valid;
+    wire [63:0] market_feature_midpoint;
+    wire market_feature_midpoint_valid;
+    wire signed [64:0] market_feature_momentum;
+    wire market_feature_momentum_valid;
+    wire [TRADE_ACC_W-1:0] market_feature_rolling_volume;
+    wire signed [32:0] market_feature_imbalance_numerator;
+    wire [32:0] market_feature_imbalance_denominator;
+    wire market_feature_imbalance_valid;
+    wire [VWAP_ACC_W-1:0] market_feature_vwap_sum_price_quantity;
+    wire [VWAP_QTY_ACC_W-1:0] market_feature_vwap_sum_quantity;
+    wire market_feature_vwap_valid;
+    wire market_reject_pulse;
+    wire [7:0] market_reject_reason;
+    wire [15:0] market_reject_symbol_id;
+    wire [31:0] market_reject_sequence;
     wire system_response_valid;
     wire [`PACKET_BITS-1:0] system_response_packet;
     wire system_packet_error;
+
+    assign market_feature_ready = 1'b1;
+
+    // The feature bus is the handoff point for the next CSR/host result
+    // stage. Keep it in the synthesized top even while the physical SPI
+    // response path remains diagnostic-only in this milestone.
+    (* keep = "true" *) wire [MARKET_FEATURE_BUS_W-1:0] market_feature_bus;
+    assign market_feature_bus = {
+        market_feature_symbol_id, market_feature_sequence,
+        market_feature_bid_price, market_feature_bid_quantity,
+        market_feature_ask_price, market_feature_ask_quantity,
+        market_feature_spread, market_feature_spread_valid,
+        market_feature_midpoint, market_feature_midpoint_valid,
+        market_feature_momentum, market_feature_momentum_valid,
+        market_feature_rolling_volume, market_feature_imbalance_numerator,
+        market_feature_imbalance_denominator, market_feature_imbalance_valid,
+        market_feature_vwap_sum_price_quantity,
+        market_feature_vwap_sum_quantity, market_feature_vwap_valid
+    };
 
     spi_slave spi_slave_i (
         .reset_n(reset_n_int),
@@ -101,25 +178,110 @@ module trading_spi_top (
     assign rx_fifo_wr_en = rx_packet_valid && rx_packet_ready;
     assign tx_packet_valid = !tx_fifo_rd_empty;
 
-    loopback_engine loopback_engine_i (
+    packet_dispatcher #(.NUM_SYMBOLS(NUM_SYMBOLS)) packet_dispatcher_i (
         .clk(clk),
         .reset_n(reset_n_int),
         .packet_valid(!rx_fifo_rd_empty),
         .packet_ready(system_packet_ready),
         .packet_in(rx_fifo_data),
+        .loopback_valid(dispatcher_loopback_valid),
+        .loopback_ready(dispatcher_loopback_ready),
+        .loopback_packet(dispatcher_loopback_packet),
+        .loopback_status_override_valid(dispatcher_status_override_valid),
+        .loopback_status_override(dispatcher_status_override),
+        .event_valid(dispatcher_event_valid),
+        .event_ready(dispatcher_event_ready),
+        .event_type(dispatcher_event_type),
+        .event_symbol_id(dispatcher_event_symbol_id),
+        .event_timestamp_ns(dispatcher_event_timestamp_ns),
+        .event_price(dispatcher_event_price),
+        .event_quantity(dispatcher_event_quantity),
+        .event_side(dispatcher_event_side),
+        .event_sequence(dispatcher_event_sequence),
+        .event_flags(dispatcher_event_flags),
+        .dispatch_error_pulse(dispatcher_error_pulse),
+        .dispatch_error_reason(dispatcher_error_reason),
+        .dispatch_error_symbol_id(dispatcher_error_symbol_id),
+        .dispatch_error_sequence(dispatcher_error_sequence)
+    );
+
+    loopback_engine loopback_engine_i (
+        .clk(clk),
+        .reset_n(reset_n_int),
+        .packet_valid(dispatcher_loopback_valid),
+        .packet_ready(dispatcher_loopback_ready),
+        .packet_in(dispatcher_loopback_packet),
         .response_ready(!tx_fifo_wr_full),
+        .status_override_valid(dispatcher_status_override_valid),
+        .status_override(dispatcher_status_override),
         .response_valid(system_response_valid),
         .response_packet(system_response_packet),
         .packet_error_pulse(system_packet_error)
+    );
+
+    market_state_engine #(
+        .NUM_SYMBOLS(NUM_SYMBOLS),
+        .TRADE_WINDOW(TRADE_WINDOW),
+        .MOMENTUM_WINDOW(MOMENTUM_WINDOW),
+        .VWAP_WINDOW(VWAP_WINDOW)
+    ) market_state_engine_i (
+        .clk(clk),
+        .reset_n(reset_n_int),
+        .event_valid(dispatcher_event_valid),
+        .event_ready(dispatcher_event_ready),
+        .event_type(dispatcher_event_type),
+        .event_symbol_id(dispatcher_event_symbol_id),
+        .event_timestamp_ns(dispatcher_event_timestamp_ns),
+        .event_price(dispatcher_event_price),
+        .event_quantity(dispatcher_event_quantity),
+        .event_side(dispatcher_event_side),
+        .event_sequence(dispatcher_event_sequence),
+        .event_flags(dispatcher_event_flags),
+        .feature_valid(market_feature_valid),
+        .feature_ready(market_feature_ready),
+        .feature_symbol_id(market_feature_symbol_id),
+        .feature_sequence(market_feature_sequence),
+        .feature_bid_price(market_feature_bid_price),
+        .feature_bid_quantity(market_feature_bid_quantity),
+        .feature_ask_price(market_feature_ask_price),
+        .feature_ask_quantity(market_feature_ask_quantity),
+        .feature_spread(market_feature_spread),
+        .feature_spread_valid(market_feature_spread_valid),
+        .feature_midpoint(market_feature_midpoint),
+        .feature_midpoint_valid(market_feature_midpoint_valid),
+        .feature_momentum(market_feature_momentum),
+        .feature_momentum_valid(market_feature_momentum_valid),
+        .feature_rolling_volume(market_feature_rolling_volume),
+        .feature_imbalance_numerator(market_feature_imbalance_numerator),
+        .feature_imbalance_denominator(market_feature_imbalance_denominator),
+        .feature_imbalance_valid(market_feature_imbalance_valid),
+        .feature_vwap_sum_price_quantity(market_feature_vwap_sum_price_quantity),
+        .feature_vwap_sum_quantity(market_feature_vwap_sum_quantity),
+        .feature_vwap_valid(market_feature_vwap_valid),
+        .event_reject_pulse(market_reject_pulse),
+        .event_reject_reason(market_reject_reason),
+        .event_reject_symbol_id(market_reject_symbol_id),
+        .event_reject_sequence(market_reject_sequence)
     );
 
     assign rx_fifo_rd_en = !rx_fifo_rd_empty && system_packet_ready;
     assign tx_fifo_wr_en = system_response_valid && !tx_fifo_wr_full;
 
     reg [31:0] packet_error_count;
+    reg [31:0] dispatch_error_count;
+    reg [31:0] market_reject_count;
     always @(posedge clk or negedge reset_n_int) begin
-        if (!reset_n_int) packet_error_count <= 32'd0;
-        else if (system_packet_error) packet_error_count <= packet_error_count + 1'b1;
+        if (!reset_n_int) begin
+            packet_error_count <= 32'd0;
+            dispatch_error_count <= 32'd0;
+            market_reject_count <= 32'd0;
+        end else begin
+            if (system_packet_error) packet_error_count <= packet_error_count + 1'b1;
+            if (dispatcher_error_pulse)
+                dispatch_error_count <= dispatch_error_count + 1'b1;
+            if (market_reject_pulse)
+                market_reject_count <= market_reject_count + 1'b1;
+        end
     end
 
     // LED0: active-low heartbeat. LED1: active-low activity pulse. LED2:
@@ -153,7 +315,9 @@ module trading_spi_top (
             else if (activity_hold_count != 0)
                 activity_hold_count <= activity_hold_count - 1'b1;
 
-            if (packet_error_count != 0) error_seen <= 1'b1;
+            if ((packet_error_count != 0) ||
+                (dispatch_error_count != 0) ||
+                (market_reject_count != 0)) error_seen <= 1'b1;
         end
     end
 

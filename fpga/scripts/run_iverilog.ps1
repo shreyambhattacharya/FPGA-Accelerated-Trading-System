@@ -10,8 +10,10 @@ $sources = @(
     (Join-Path $repoRoot 'fpga\rtl\fifo\packet_fifo.sv'),
     (Join-Path $repoRoot 'fpga\rtl\protocol\protocol_pkg.sv'),
     (Join-Path $repoRoot 'fpga\rtl\protocol\crc8_engine.sv'),
+    (Join-Path $repoRoot 'fpga\rtl\protocol\packet_dispatcher.sv'),
     (Join-Path $repoRoot 'fpga\rtl\spi\spi_slave.sv'),
     (Join-Path $repoRoot 'fpga\rtl\protocol\loopback_engine.sv'),
+    (Join-Path $repoRoot 'fpga\rtl\market\market_state_engine.sv'),
     (Join-Path $repoRoot 'fpga\rtl\top\trading_spi_top.sv'),
     (Join-Path $repoRoot 'fpga\tb\tb_trading_spi_top.sv')
 )
@@ -50,3 +52,31 @@ if ($LASTEXITCODE -ne 0) { throw "CRC engine simulation compilation failed" }
 
 vvp $crcOutput
 if ($LASTEXITCODE -ne 0) { throw "CRC engine simulation failed" }
+
+$marketOutput = Join-Path $buildDir 'tb_market_state_engine.vvp'
+iverilog -g2012 -Wall -I (Join-Path $repoRoot 'fpga\rtl\protocol') -s tb_market_state_engine -o $marketOutput `
+    (Join-Path $repoRoot 'fpga\rtl\market\market_state_engine.sv') `
+    (Join-Path $repoRoot 'fpga\tb\tb_market_state_engine.sv')
+if ($LASTEXITCODE -ne 0) { throw "Market-state simulation compilation failed" }
+
+vvp $marketOutput
+if ($LASTEXITCODE -ne 0) { throw "Market-state simulation failed" }
+
+$parameterSource = @(
+    (Join-Path $repoRoot 'fpga\rtl\market\market_state_engine.sv'),
+    (Join-Path $repoRoot 'fpga\tb\tb_market_parameter.sv')
+)
+foreach ($symbolCount in @(1, 4, 8, 16, 32)) {
+    $parameterOutput = Join-Path $buildDir ("tb_market_parameter_{0}.vvp" -f $symbolCount)
+    iverilog -g2012 -Wall -I (Join-Path $repoRoot 'fpga\rtl\protocol') `
+        "-Ptb_market_parameter.NUM_SYMBOLS=$symbolCount" `
+        -s tb_market_parameter -o $parameterOutput @parameterSource
+    if ($LASTEXITCODE -ne 0) { throw "NUM_SYMBOLS=$symbolCount elaboration failed" }
+
+    vvp $parameterOutput
+    if ($LASTEXITCODE -ne 0) { throw "NUM_SYMBOLS=$symbolCount simulation failed" }
+}
+
+$differentialScript = Join-Path $repoRoot 'tools\reference_model\differential_test.py'
+python $differentialScript
+if ($LASTEXITCODE -ne 0) { throw "Python versus RTL differential test failed" }

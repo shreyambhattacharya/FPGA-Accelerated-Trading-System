@@ -25,16 +25,43 @@ The external SPI mapping is the wiring contract for this project and must be cro
 
 1. Install the Gowin IDE/toolchain appropriate for the Tang Nano 20K and connect the board through its normal USB-C programming interface.
 2. Open `fpga/gowin/fpga_trading.gprj`.
-3. Confirm the project device is `GW2AR-18C` / `GW2AR-LV18QN88C8/I7`, the top module is `trading_spi_top`, and the source list includes the reset, async FIFO, SPI, `crc8_engine`, loopback, and top-level RTL files.
+3. Confirm the project device is `GW2AR-18C` / `GW2AR-LV18QN88C8/I7`, the top module is `trading_spi_top`, and the source list includes the reset, async FIFO, SPI, `crc8_engine`, `packet_dispatcher`, `market_state_engine`, loopback, and top-level RTL files.
 4. Set the HDL language option to **SystemVerilog 2017** (`sysv2017` / `sysv-2017`, depending on the IDE version). The checked-in `fpga/gowin/configure_project.tcl` contains the explicit `set_option -verilog_std sysv2017` setting; source it in the Gowin Tcl console or configure the same option in the project GUI. The `.gprj` remains in the vendor's portable project format.
 5. Confirm the project includes `fpga/constraints/tang_nano_20k.cst` and `fpga/constraints/tang_nano_20k.sdc`.
 6. Run synthesis and inspect the synthesis log. Do not proceed to place-and-route or program hardware while EX3209, EX2213, AG0100, or AG0101 warnings remain.
 7. After synthesis is clean, run place-and-route/bitstream generation. Resolve any IDE-version-specific constraint or primitive warning before programming.
 8. Download the generated bitstream to the board for a volatile test, or program the board's configuration flash using the normal Gowin/Sipeed flow if persistence is desired.
 
-The checked-in RTL was also exercised with GowinSynthesis when that vendor tool was available in the development environment. The CRC engine is a byte-per-system-clock datapath: synthesis success confirms the sequential implementation is accepted by the vendor parser, but is not evidence of place-and-route timing closure or physical Pi↔FPGA validation.
+The checked-in RTL was also exercised with GowinSynthesis and place-and-route
+when that vendor tool was available in the development environment. The CRC
+engine is a byte-per-system-clock datapath and the market histories are
+inferred as RAM16 resources by this tool run. Synthesis/P&R success is not
+evidence of physical Pi↔FPGA validation.
 
-For a reproducible command-line implementation run, use the checked-in `fpga/scripts/run_gowin_pnr.tcl` with Gowin's `gw_sh.exe`. The latest local run used Gowin V1.9.11.03 Education and the target part above. It reported `clk27` actual Fmax `81.815 MHz` with 7 logic levels, `spi_clk` actual Fmax `98.922 MHz` with 8 logic levels, and zero setup/hold TNS on both clocks. The measured worst `clk27` path is now the registered `byte_index` control into the CRC engine's one-byte `next_crc`/result cone, with 12.188 ns data delay and 24.814 ns setup slack at the 37.037 ns constraint. This clears the requested >40 MHz `clk27` target in this tool run.
+For a reproducible command-line implementation run, use the checked-in
+`fpga/scripts/run_gowin_pnr.tcl` with Gowin's `gw_sh.exe`. The local default
+run used Gowin V1.9.11.03 Education and the target part above. The full
+parameter matrix and its measured resource/timing results are recorded below.
+
+### Gowin `NUM_SYMBOLS` matrix
+
+All points use the same 27 MHz `clk27`, 5 MHz `spi_clk`, constraints, and
+physical pins. `SSRAM(RAM16)` is the vendor report's block-memory resource;
+the implementation used no DSP blocks.
+
+| `NUM_SYMBOLS` | LUT | FF | RAM16/BRAM blocks | DSP | `clk27` Fmax | setup slack | hold slack | TNS setup/hold | critical `clk27` path |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| 4 | 1,609 | 2,101 | 133 | 0 | 93.264 MHz | 26.315 ns | 0.313 ns | 0 / 0 ns | loopback byte index → CRC result |
+| 8 | 1,451 | 2,105 | 133 | 0 | 86.086 MHz | 25.421 ns | 0.313 ns | 0 / 0 ns | RX FIFO pointer → dispatcher packet register |
+| 16 | 1,505 | 2,113 | 133 | 0 | 76.170 MHz | 23.909 ns | 0.313 ns | 0 / 0 ns | dispatcher byte index → CRC result |
+| 32 | 2,153 | 3,132 | 130 | 0 | 29.366 MHz | 2.985 ns | 0.313 ns | 0 / 0 ns | dispatcher symbol register → per-symbol sequence CE |
+
+The 32-symbol point closes the required 27 MHz operating clock but does not
+meet the preferred >50 MHz analysis goal. The scaling bottleneck is the
+per-symbol sequence/state update decode, not a failure of the 27 MHz target.
+The next optimization should pipeline or RAM-map that state update before
+raising `NUM_SYMBOLS` further. PR1014 remains present for `clk_d` and
+`spi_clk_d` at every point.
 
 ## Clock routing and PR1014
 

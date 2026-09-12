@@ -24,6 +24,10 @@ enum class StatusCode : std::uint8_t {
     BadSync = 0xE1,
     BadChecksum = 0xE2,
     BadType = 0xE3,
+    BadSymbol = 0xE4,
+    DuplicateSequence = 0xE5,
+    StaleSequence = 0xE6,
+    BadSide = 0xE7,
 };
 
 using PacketBytes = std::array<std::uint8_t, kPacketBytes>;

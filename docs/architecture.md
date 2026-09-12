@@ -2,20 +2,37 @@
 
 ## Scope of this milestone
 
-This stage establishes a reliable binary packet path before any trading strategy is added. The FPGA path is:
+This stage keeps the reliable binary packet path and adds the first real
+market-data stage. The FPGA path is:
 
 ```text
-SPI pins -> SPI mode-0 slave -> RX packet FIFO -> loopback validator
-                                      -> TX packet FIFO -> SPI mode-0 transmitter
+SPI pins -> SPI mode-0 slave -> RX packet FIFO -> packet dispatcher
+                                      |              |-> loopback validator -> TX packet FIFO
+                                      |              `-> normalized event -> market state/features
+                                      `------------------------------------> SPI mode-0 transmitter
 ```
 
-The current processing logic is intentionally small. It checks the sync/version byte, message type, and CRC, then returns a deterministic `STATUS` packet. A valid `LOOPBACK` request receives status `OK`; malformed 32-byte packets receive a specific error status while preserving the request sequence number.
+`packet_dispatcher.sv` validates sync and CRC with the shared sequential CRC
+engine, preserves the existing loopback/status path, and exposes a flat
+valid/ready event record for quote/trade traffic. `MSG_LOOPBACK` and malformed
+or unsupported packets remain diagnostic traffic. Valid quote/trade packets
+with an out-of-range symbol produce an explicit `STATUS_BAD_SYMBOL` error and
+do not enter market state.
+
+The starter symbol table is numeric and parameterized: `0=SPY`, `1=QQQ`,
+`2=NVDA`, and `3=AMD`. `NUM_SYMBOLS` can be changed without changing the
+packet format or physical interface.
 
 ## Timing-hardened packet validation
 
 The loopback stage validates and generates CRC-8/ATM values with the standalone `fpga/rtl/protocol/crc8_engine.sv`. It accepts one byte per `clk27` cycle and consumes the first 31 bytes of each 32-byte packet; the final byte is the transmitted CRC. The request and response CRC streams are separated by registered FSM states, so the old full-packet combinational CRC/response cone is no longer a single-cycle `clk27` path. The engine reports `done` after the final byte edge and holds the result until the next stream.
 
-At 27 MHz, each 31-byte CRC stream takes 31 system-clock cycles (about 1.15 us). The loopback FSM takes approximately 67 `clk27` cycles from request acceptance to `response_valid`, including request validation, response construction, and response CRC. The host protocol still uses the existing 32-byte request, 32-byte turnaround, and 32-byte response transfers. At 5 MHz SPI, the 32-byte turnaround supplies 51.2 us, or about 1,382 `clk27` cycles, leaving more than 1,300 system-clock cycles of processing margin.
+At 27 MHz, each 31-byte CRC stream takes 31 system-clock cycles (about 1.15
+us). Market events then pass through a registered dispatcher boundary and a
+multi-state market update/feature/output sequence. The feature record is
+registered and held under downstream backpressure. Market packets do not
+create a loopback response; the existing three-transfer request/turnaround/
+response framing remains available for diagnostics and future result packets.
 
 ## Pi responsibilities
 
@@ -23,7 +40,34 @@ The Raspberry Pi 5 is the SPI master. It will own Linux networking, TLS/WebSocke
 
 ## FPGA responsibilities
 
-The FPGA is the deterministic data-plane accelerator. In later stages it will update market state and calculate integer/fixed-point features, signal decisions, and hardware risk checks. The first stage proves only the transport and buffering path.
+The FPGA is the deterministic data-plane accelerator. This stage updates
+per-symbol quote/trade state and calculates spread, midpoint, momentum,
+rolling volume, signed quote imbalance, and VWAP numerator/denominator
+accumulators. It deliberately emits no trading signal, strategy decision, risk
+approval, broker order, or live-trading action.
+
+## Market-state semantics
+
+The market engine accepts only `MSG_MARKET_QUOTE` and `MSG_MARKET_TRADE` on its
+normalized interface. Sequence numbers are unsigned and monotonic per symbol:
+the first event is accepted, a larger sequence is accepted, an equal sequence
+is rejected as duplicate, and a lower sequence is rejected as stale. Sequence
+wrap is not supported in this milestone.
+
+Quotes with side `0` update only the bid; side `1` updates only the ask.
+Trades update last-trade state, rolling volume, and VWAP accumulators but never
+overwrite either quote side. A quote is usable only when both sides are valid
+and `ask >= bid`; crossed or incomplete quotes retain their raw sides but do
+not produce spread/midpoint/imbalance or append a momentum observation. Each
+accepted event then calculates a feature record; a trade also observes the
+current safe quote and can append its midpoint sample.
+
+Trade volume uses a parameterized circular window (default 32). Midpoint
+history uses a circular window (default 16) and momentum becomes valid only
+after that many valid midpoint observations. VWAP uses a circular window
+(default 32), replacing old `price*quantity` and quantity terms without
+recomputing the window. The output exposes the accumulators; division is left
+to a later consumer.
 
 ## Clocking note
 

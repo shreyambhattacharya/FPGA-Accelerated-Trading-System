@@ -1,16 +1,48 @@
 # Fixed-point design notes
 
-No market indicator arithmetic is implemented in this milestone. The protocol reserves a 64-bit data field so future price semantics can be introduced without using floating point in RTL.
+The market path uses deterministic unsigned integer arithmetic. No floating
+point is synthesized or used by the reference model.
 
-The current candidate for market prices is an integer number of micro-dollars (`1 USD = 1,000,000` units) stored in an unsigned 64-bit field. Before freezing that choice, the project should measure the supported instrument range, decide whether signed deltas are required, and specify saturation versus wrap behavior for every operation.
+## Price and quantity
 
-Future feature modules must document:
+- Price is an unsigned 64-bit integer in micro-dollars: `price = USD * 1,000,000`.
+- Quantity is an unsigned 32-bit integer with no fractional scale.
+- `price * quantity` is formed as an unsigned 96-bit product (`64 x 32`).
+- The packet and normalized interface preserve the raw integer values.
 
-- input and output bit widths;
-- scale and signedness;
-- intermediate widths and overflow behavior;
-- rounding/truncation behavior;
-- reset and warm-up behavior for rolling windows;
-- matching software reference-model semantics.
+The representable price range is `0 .. 2^64-1` micro-dollars. Supported inputs
+and window sizes are chosen so the documented intermediate widths do not
+overflow: a 32-entry VWAP sum uses 101 bits for `price*quantity` terms, and a
+32-entry quantity sum/rolling-volume sum uses 37 bits. The RTL derives these
+widths from the window parameters; the implementation keeps one minimum guard
+bit for a one-entry window.
 
-The FPGA V1 rule is deterministic integer/fixed-point arithmetic only. Synthesizable floating point and machine learning are not part of the initial design.
+## Features
+
+| Feature | RTL representation | Semantics |
+| --- | --- | --- |
+| spread | unsigned 64-bit + valid | `ask - bid` only when both sides are valid and `ask >= bid` |
+| midpoint | unsigned 64-bit + valid | widened 65-bit `bid + ask`, then floor division by two |
+| momentum | signed 65-bit + valid | current valid midpoint minus the oldest sample in the full 16-entry window |
+| rolling volume | unsigned derived-width | circular sum of the latest `TRADE_WINDOW` quantities |
+| imbalance | signed 33-bit numerator and unsigned 33-bit denominator + valid | `bid_qty - ask_qty` and `bid_qty + ask_qty`; no divider in RTL |
+| VWAP | unsigned derived-width sums + valid | rolling `sum(price*quantity)` and `sum(quantity)`; no divider in RTL |
+
+Midpoint truncation is toward zero for these non-negative operands, equivalent
+to floor. Imbalance is two's-complement signed; its numerator is only valid
+with a safe two-sided quote. VWAP validity means the rolling quantity sum is
+nonzero, not that a quotient has been calculated.
+
+## Warm-up and replacement
+
+Trade and VWAP histories use circular pointers. Until a window is full, new
+terms are added without subtraction. Once full, the term at the write pointer
+is subtracted before the new term is added. Momentum uses only safe midpoint
+observations; crossed or incomplete quotes do not advance its pointer or
+count. Momentum validity starts on the first feature calculation after the
+configured number of valid samples has already been collected.
+
+The Python model in `tools/reference_model/market_model.py` implements the
+same ring replacement, integer widths, validity, reset, and warm-up behavior.
+Sequence numbers are compared as unsigned values; wraparound ordering is not
+implemented yet and is explicitly out of scope.

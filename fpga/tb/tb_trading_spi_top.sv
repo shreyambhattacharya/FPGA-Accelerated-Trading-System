@@ -44,6 +44,29 @@ module tb_trading_spi_top;
         end
     endfunction
 
+    function automatic [255:0] make_market_quote;
+        input [15:0] symbol_value;
+        input [63:0] price_value;
+        input [31:0] quantity_value;
+        input [7:0] side_value;
+        input [31:0] seq_value;
+        reg [255:0] packet;
+        begin
+            packet = 256'd0;
+            packet[255:248] = `PROTOCOL_SYNC_VERSION;
+            packet[247:240] = `MSG_MARKET_QUOTE;
+            packet[239:224] = symbol_value;
+            packet[223:160] = 64'h0000000000000001;
+            packet[159:96]  = price_value;
+            packet[95:64]   = quantity_value;
+            packet[63:56]   = side_value;
+            packet[55:24]   = seq_value;
+            packet[23:8]    = 16'h0000;
+            packet[7:0]     = crc8_packet(packet);
+            make_market_quote = packet;
+        end
+    endfunction
+
     function automatic [7:0] byte_of;
         input [255:0] packet;
         input integer index;
@@ -153,6 +176,18 @@ module tb_trading_spi_top;
         if (byte_of(response, 31) !== crc8_packet(response)) $fatal(1, "valid response CRC failed");
         if (first_response_bit !== 1'b1) $fatal(1, "first response bit was not byte 0 MSB");
         if (last_response_bit !== response[0]) $fatal(1, "last response bit was not CRC LSB");
+
+        // A valid market quote uses the same SPI/FIFO/CRC ingress path but is
+        // consumed by the normalized event pipeline and produces no loopback
+        // response packet.
+        request = make_market_quote(16'd0, 64'd450000000, 32'd100, 8'd0, 32'd1);
+        spi_transfer(request, empty_response, empty_first_bit, empty_last_bit);
+        spi_transfer(256'd0, empty_response, empty_first_bit, empty_last_bit);
+        spi_transfer(256'd0, response, empty_first_bit, empty_last_bit);
+        if (dut.market_state_engine_i.best_bid_price[0] !== 64'd450000000 ||
+            dut.market_state_engine_i.best_bid_quantity[0] !== 32'd100 ||
+            dut.market_state_engine_i.bid_valid[0] !== 1'b1)
+            $fatal(1, "market quote did not reach state engine through top");
 
         for (seq_index = 18; seq_index < 23; seq_index = seq_index + 1) begin
             request = make_request(seq_index, `MSG_LOOPBACK, `PROTOCOL_SYNC_VERSION);

@@ -12,6 +12,8 @@ module loopback_engine (
     output wire                    packet_ready,
     input  wire [`PACKET_BITS-1:0] packet_in,
     input  wire                    response_ready,
+    input  wire                    status_override_valid,
+    input  wire [7:0]              status_override,
     output wire                    response_valid,
     output reg  [`PACKET_BITS-1:0] response_packet,
     output reg                     packet_error_pulse
@@ -33,6 +35,8 @@ module loopback_engine (
     reg [7:0] status_reg = `STATUS_OK;
     reg [15:0] response_flags_reg = 16'h0001;
     reg response_valid_reg = 1'b0;
+    reg request_status_override_valid_reg = 1'b0;
+    reg [7:0] request_status_override_reg = 8'h00;
 
     wire packet_is_filler = (packet_in == {`PACKET_BITS{1'b0}});
     wire accepted = packet_valid && packet_ready;
@@ -84,6 +88,22 @@ module loopback_engine (
         end
     endfunction
 
+    function automatic [15:0] flags_for_status(input [7:0] status);
+        begin
+            case (status)
+            `STATUS_OK:            flags_for_status = 16'h0001;
+            `STATUS_BAD_SYNC:      flags_for_status = 16'h0002;
+            `STATUS_BAD_CHECKSUM:  flags_for_status = 16'h0004;
+            `STATUS_BAD_TYPE:      flags_for_status = 16'h0008;
+            `STATUS_BAD_SYMBOL:    flags_for_status = 16'h0010;
+            `STATUS_DUPLICATE_SEQ: flags_for_status = 16'h0020;
+            `STATUS_STALE_SEQ:     flags_for_status = 16'h0040;
+            `STATUS_BAD_SIDE:      flags_for_status = 16'h0080;
+            default:               flags_for_status = 16'h8000;
+            endcase
+        end
+    endfunction
+
     always @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
             state <= IDLE;
@@ -95,6 +115,8 @@ module loopback_engine (
             response_crc_result <= 0;
             status_reg <= `STATUS_OK;
             response_flags_reg <= 16'h0001;
+            request_status_override_valid_reg <= 1'b0;
+            request_status_override_reg <= 8'h00;
             response_valid_reg <= 1'b0;
             packet_error_pulse <= 1'b0;
         end else begin
@@ -109,6 +131,8 @@ module loopback_engine (
             IDLE: begin
                 if (accepted && !packet_is_filler) begin
                     request_reg <= packet_in;
+                    request_status_override_valid_reg <= status_override_valid;
+                    request_status_override_reg <= status_override;
                     byte_index <= 0;
                     state <= CRC_REQUEST;
                 end
@@ -124,7 +148,10 @@ module loopback_engine (
             end
 
             VALIDATE_REQUEST: begin
-                if (!request_valid) begin
+                if (request_status_override_valid_reg) begin
+                    status_reg <= request_status_override_reg;
+                    response_flags_reg <= flags_for_status(request_status_override_reg);
+                end else if (!request_valid) begin
                     if (!request_sync_ok) begin
                         status_reg <= `STATUS_BAD_SYNC;
                         response_flags_reg <= 16'h0002;
@@ -139,7 +166,7 @@ module loopback_engine (
                     status_reg <= `STATUS_OK;
                     response_flags_reg <= 16'h0001;
                 end
-                packet_error_pulse <= !request_valid;
+                packet_error_pulse <= request_status_override_valid_reg || !request_valid;
                 state <= BUILD_RESPONSE;
             end
 

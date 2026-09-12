@@ -6,17 +6,19 @@ This is not institutional colocated HFT, a profitability claim, or a live-money 
 
 ## Current milestone
 
-The first milestone proves the data-plane foundation:
+The market-data milestone preserves the data-plane foundation and adds a
+parameterized quote/trade state engine:
 
 ```text
 Pi SPI master
-  -> 32-byte request transfer
-Tang Nano SPI slave -> SPI-domain RX FIFO -> 27 MHz loopback validator -> SPI-domain TX FIFO
-  <- turnaround transfer clocks the pipeline
-  <- response transfer returns a validated status packet
+  -> 32-byte packet transfer
+Tang Nano SPI slave -> SPI-domain RX FIFO -> 27 MHz packet dispatcher
+                                      |-> LOOPBACK -> status/TX FIFO
+                                      `-> QUOTE/TRADE -> normalized event -> market state/features
+  <- turnaround/response transfers remain available for diagnostic packets
 ```
 
-The packet format is fixed at 32 bytes, uses big-endian integer fields, and ends with CRC-8/ATM. The RTL is written in synthesizable SystemVerilog. The packet FIFOs are Gray-pointer asynchronous FIFOs with two-flop pointer synchronizers; SPI framing remains in the external SPI clock domain while validation and response generation run on the Tang Nano's onboard 27 MHz clock. CRC validation and response generation use a byte-per-system-clock engine, keeping the packet-wide work out of a single combinational timing path. The host side is modern C++17 and uses Linux `spidev` when built and run on Raspberry Pi OS. A deterministic software transport is included so protocol and benchmark plumbing can be exercised on a development PC without pretending that physical SPI was tested.
+The packet format is fixed at 32 bytes, uses big-endian integer fields, and ends with CRC-8/ATM. The RTL is written in synthesizable SystemVerilog. The packet FIFOs are Gray-pointer asynchronous FIFOs with two-flop pointer synchronizers; SPI framing remains in the external SPI clock domain while validation, market-state updates, and diagnostic response generation run on the Tang Nano's onboard 27 MHz clock. The market engine uses integer micro-dollar prices, per-symbol sequence checks, quote/trade isolation, spread, midpoint, momentum, rolling volume, imbalance, and VWAP accumulators. It emits no trading signals or broker orders. The host side is modern C++17 and uses Linux `spidev` when built and run on Raspberry Pi OS. A deterministic software transport and Python reference/differential model are included so protocol and market semantics can be exercised on a development PC without pretending that physical SPI was tested.
 
 ## Responsibilities and rationale
 
@@ -28,15 +30,16 @@ The FPGA does not parse JSON, TLS, TCP, or WebSocket framing. It is being used f
 
 ```text
 docs/                         Architecture, protocol, arithmetic, verification, benchmarks
-fpga/rtl/                     SPI slave, CDC FIFOs, reset, protocol and loopback RTL
-fpga/tb/                      Self-checking RTL testbench
+fpga/rtl/                     SPI slave, CDC FIFOs, reset, protocol, dispatcher, market RTL
+fpga/tb/                      Self-checking RTL testbenches
 fpga/constraints/             Tang Nano 20K CST pin assignments and timing constraints
 fpga/gowin/                   Gowin project file for GW2AR-18C
 fpga/scripts/                 Simulation and Gowin CLI build helpers
 host/include/                 C++ protocol and transport interfaces
 host/src/                     Linux SPI and software-loopback implementations
 host/tests/                   C++ loopback/stress utility
-tools/reference_model/       Small independent protocol reference model
+tools/reference_model/       Independent protocol and market reference models
+tools/market_data_generator/ Deterministic synthetic quote/trade event stream
 ```
 
 ## Build the host side
@@ -69,7 +72,7 @@ With Icarus Verilog installed:
 .\fpga\scripts\run_iverilog.ps1
 ```
 
-The script compiles the RTL and self-checking testbenches into a local build directory and runs them with `vvp`. The checks cover reset, valid loopback, sequential packets, checksum rejection, incomplete frames, mode-0 response timing, FIFO backpressure/overflow visibility, a 64-packet async FIFO stress test with unrelated clocks, and standalone CRC known/zero/request/response/reset/back-to-back/random vectors. If Gowin is installed, `fpga/scripts/run_gowin_pnr.tcl` drives synthesis, place-and-route, timing, and bitstream generation through `gw_sh.exe`; its implementation outputs remain ignored.
+The script compiles the RTL and self-checking testbenches into a local build directory and runs them with `vvp`. The checks cover reset, valid loopback, sequential packets, checksum rejection, incomplete frames, mode-0 response timing, FIFO backpressure/overflow visibility, a 64-packet async FIFO stress test with unrelated clocks, standalone CRC vectors, directed market feature/edge-case tests, `NUM_SYMBOLS=1/4/8/16/32` elaboration, and a 1,000-event Python-versus-RTL differential replay. If Gowin is installed, `fpga/scripts/run_gowin_pnr.tcl` drives the default build and `fpga/scripts/run_gowin_matrix.ps1` drives the 4/8/16/32 resource/timing matrix through `gw_sh.exe`; implementation outputs remain ignored.
 
 ## Hardware still required
 
@@ -85,19 +88,15 @@ The exact wiring, power precautions, Gowin IDE flow, and Raspberry Pi commands a
 
 ## Roadmap
 
-1. Pi ↔ FPGA SPI foundation — current milestone
-2. Freeze and extend the normalized market-event protocol
-3. Harden FIFO/clock-domain boundaries
-4. Synthetic market-data pipeline
-5. Market-state engine
-6. Spread, midpoint, imbalance, momentum, and VWAP features
-7. Configurable signal FSM
-8. Hardware risk checks
-9. C++ real-time market-data receiver
-10. Full Pi → FPGA → Pi event/signal path
-11. Historical replay and software reference model
-12. Paper broker integration
-13. Backtesting and strategy evaluation
-14. Latency, throughput, and robustness benchmarking
+1. Pi ↔ FPGA SPI foundation — complete
+2. Normalized quote/trade protocol and dispatcher — current milestone
+3. Parameterized market-state engine and integer features — current milestone
+4. C++ real-time market-data receiver
+5. Full Pi → FPGA event/feature path
+6. Configurable signal FSM
+7. Hardware risk checks
+8. Historical replay and strategy evaluation
+9. Paper broker integration
+10. Latency, throughput, and robustness benchmarking
 
 The next stages must report measured results only, distinguish simulation from hardware, and keep paper trading as the only execution mode.

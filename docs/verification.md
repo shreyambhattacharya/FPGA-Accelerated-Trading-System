@@ -1,22 +1,49 @@
 # Verification plan
 
-## Current automated checks
+## Automated checks
 
-The SystemVerilog testbench is self-checking and exercises:
+Run the complete local suite with:
 
-- reset and repeated CS-framed transfers;
-- a valid loopback packet;
-- sequence preservation across several packets;
-- CRC rejection with a deterministic error status;
-- incomplete-frame detection;
-- RX FIFO overflow visibility;
-- TX FIFO empty behavior during request/turnaround transfers;
-- mode-0 response scheduling across request, turnaround, and response frames;
-- power-on reset with the external SPI clock held idle;
-- async FIFO ordering, full/empty flags, reset during traffic, and overflow/underflow counters using unrelated clocks.
+```powershell
+.\fpga\scripts\run_iverilog.ps1
+```
 
-The C++ utility exercises the same packet serializer/parser and a deterministic software transport. It reports success/failure statistics, latency percentiles, end-to-end elapsed time, and effective packets/second. The output explicitly labels simulation versus real hardware and does not label software timing as FPGA hardware timing.
+The script runs the existing SPI/CDC/CRC/loopback regressions plus:
 
-## Future checks
+- `tb_market_state_engine.sv`: directed first-bid/first-ask, valid and
+  crossed quotes, spread/midpoint, signed imbalance, side isolation, trade
+  isolation, zero quantity, ring fill/replacement, momentum warm-up/wrap,
+  VWAP accumulator replacement, duplicate/stale/invalid sequence, invalid
+  symbol/side, reset, and feature backpressure;
+- `tb_market_parameter.sv`: compile/elaborate/run smoke points for
+  `NUM_SYMBOLS=1,4,8,16,32`;
+- `tools/reference_model/differential_test.py`: deterministic packet replay
+  through the dispatcher and market engine against the independent Python
+  model.
 
-Before connecting a market-data engine, add directed tests for every packet type, randomized packet fields, CRC fault injection, FIFO boundaries, back-to-back CS behavior, reset during idle and transfer, and a bit-accurate comparison with the Python reference model. Hardware-in-the-loop tests should capture the actual Pi and FPGA configuration, clock rate, packet count, errors, and environment.
+The default differential stream contains exactly 1,000 events and, in the
+latest run, produced 915 feature records, 84 engine rejections, and 1 explicit
+dispatcher symbol error with zero mismatches. It includes all four starter
+symbols, quote/trade interleaving, duplicate/stale and bad-side cases, crossed
+quotes, zero quantity, large prices, and maximum-width price/quantity fields.
+
+The C++ utility continues to exercise packet serialization/parsing and the
+deterministic software transport. Its output labels simulation versus real
+hardware and does not present software timing as FPGA timing.
+
+## Vendor implementation checks
+
+`fpga/scripts/run_gowin_pnr.tcl` runs the default top through Gowin synthesis,
+place-and-route, timing, and bitstream generation. The matrix driver
+`fpga/scripts/run_gowin_matrix.ps1` repeats the flow for `NUM_SYMBOLS=4,8,16,32`
+using physical-IO-preserving wrappers. Reports stay under the ignored
+`fpga/gowin/validation` directory.
+
+The current matrix has zero setup/hold TNS at both `clk27` and `spi_clk` for
+all four points. It still reports PR1014 for the generic routing of `clk_d` and
+`spi_clk_d`; this is documented in the bring-up guide and is not suppressed.
+
+Physical Pi↔Tang validation has not been run because the hardware is not
+available in this development environment. Any hardware result must record
+the board, bitstream commit, tool version, SPI mode/rate, packet count,
+failures, wiring, and measurement setup.

@@ -16,7 +16,7 @@ Tang Nano SPI slave -> SPI-domain RX FIFO -> 27 MHz loopback validator -> SPI-do
   <- response transfer returns a validated status packet
 ```
 
-The packet format is fixed at 32 bytes, uses big-endian integer fields, and ends with CRC-8/ATM. The RTL is written in synthesizable SystemVerilog. The packet FIFOs are Gray-pointer asynchronous FIFOs with two-flop pointer synchronizers; SPI framing remains in the external SPI clock domain while validation and response generation run on the Tang Nano's onboard 27 MHz clock. The host side is modern C++17 and uses Linux `spidev` when built and run on Raspberry Pi OS. A deterministic software transport is included so protocol and benchmark plumbing can be exercised on a development PC without pretending that physical SPI was tested.
+The packet format is fixed at 32 bytes, uses big-endian integer fields, and ends with CRC-8/ATM. The RTL is written in synthesizable SystemVerilog. The packet FIFOs are Gray-pointer asynchronous FIFOs with two-flop pointer synchronizers; SPI framing remains in the external SPI clock domain while validation and response generation run on the Tang Nano's onboard 27 MHz clock. CRC validation and response generation use a byte-per-system-clock engine, keeping the packet-wide work out of a single combinational timing path. The host side is modern C++17 and uses Linux `spidev` when built and run on Raspberry Pi OS. A deterministic software transport is included so protocol and benchmark plumbing can be exercised on a development PC without pretending that physical SPI was tested.
 
 ## Responsibilities and rationale
 
@@ -32,7 +32,7 @@ fpga/rtl/                     SPI slave, CDC FIFOs, reset, protocol and loopback
 fpga/tb/                      Self-checking RTL testbench
 fpga/constraints/             Tang Nano 20K CST pin assignments and timing constraints
 fpga/gowin/                   Gowin project file for GW2AR-18C
-fpga/scripts/                 Local simulation helper
+fpga/scripts/                 Simulation and Gowin CLI build helpers
 host/include/                 C++ protocol and transport interfaces
 host/src/                     Linux SPI and software-loopback implementations
 host/tests/                   C++ loopback/stress utility
@@ -69,7 +69,7 @@ With Icarus Verilog installed:
 .\fpga\scripts\run_iverilog.ps1
 ```
 
-The script compiles the RTL and self-checking testbenches into a local build directory and runs them with `vvp`. The checks cover reset, valid loopback, sequential packets, checksum rejection, incomplete frames, mode-0 response timing, FIFO backpressure/overflow visibility, and a 64-packet async FIFO stress test with unrelated clocks.
+The script compiles the RTL and self-checking testbenches into a local build directory and runs them with `vvp`. The checks cover reset, valid loopback, sequential packets, checksum rejection, incomplete frames, mode-0 response timing, FIFO backpressure/overflow visibility, a 64-packet async FIFO stress test with unrelated clocks, and standalone CRC known/zero/request/response/reset/back-to-back/random vectors. If Gowin is installed, `fpga/scripts/run_gowin_pnr.tcl` drives synthesis, place-and-route, timing, and bitstream generation through `gw_sh.exe`; its implementation outputs remain ignored.
 
 ## Hardware still required
 

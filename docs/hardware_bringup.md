@@ -25,14 +25,26 @@ The external SPI mapping is the wiring contract for this project and must be cro
 
 1. Install the Gowin IDE/toolchain appropriate for the Tang Nano 20K and connect the board through its normal USB-C programming interface.
 2. Open `fpga/gowin/fpga_trading.gprj`.
-3. Confirm the project device is `GW2AR-18C` / `GW2AR-LV18QN88C8/I7`, the top module is `trading_spi_top`, and the source list includes the reset, async FIFO, SPI, protocol, and top-level RTL files.
+3. Confirm the project device is `GW2AR-18C` / `GW2AR-LV18QN88C8/I7`, the top module is `trading_spi_top`, and the source list includes the reset, async FIFO, SPI, `crc8_engine`, loopback, and top-level RTL files.
 4. Set the HDL language option to **SystemVerilog 2017** (`sysv2017` / `sysv-2017`, depending on the IDE version). The checked-in `fpga/gowin/configure_project.tcl` contains the explicit `set_option -verilog_std sysv2017` setting; source it in the Gowin Tcl console or configure the same option in the project GUI. The `.gprj` remains in the vendor's portable project format.
 5. Confirm the project includes `fpga/constraints/tang_nano_20k.cst` and `fpga/constraints/tang_nano_20k.sdc`.
 6. Run synthesis and inspect the synthesis log. Do not proceed to place-and-route or program hardware while EX3209, EX2213, AG0100, or AG0101 warnings remain.
 7. After synthesis is clean, run place-and-route/bitstream generation. Resolve any IDE-version-specific constraint or primitive warning before programming.
 8. Download the generated bitstream to the board for a volatile test, or program the board's configuration flash using the normal Gowin/Sipeed flow if persistence is desired.
 
-The checked-in RTL was also exercised with GowinSynthesis when that vendor tool was available in the development environment. A successful synthesis is not evidence of place-and-route timing closure or physical Pi↔FPGA validation.
+The checked-in RTL was also exercised with GowinSynthesis when that vendor tool was available in the development environment. The CRC engine is a byte-per-system-clock datapath: synthesis success confirms the sequential implementation is accepted by the vendor parser, but is not evidence of place-and-route timing closure or physical Pi↔FPGA validation.
+
+For a reproducible command-line implementation run, use the checked-in `fpga/scripts/run_gowin_pnr.tcl` with Gowin's `gw_sh.exe`. The latest local run used Gowin V1.9.11.03 Education and the target part above. It reported `clk27` actual Fmax `81.815 MHz` with 7 logic levels, `spi_clk` actual Fmax `98.922 MHz` with 8 logic levels, and zero setup/hold TNS on both clocks. The measured worst `clk27` path is now the registered `byte_index` control into the CRC engine's one-byte `next_crc`/result cone, with 12.188 ns data delay and 24.814 ns setup slack at the 37.037 ns constraint. This clears the requested >40 MHz `clk27` target in this tool run.
+
+## Clock routing and PR1014
+
+The baseline Tang Nano 20K place-and-route report identifies the `clk27` timing path as the old RX-FIFO-to-`loopback_engine` response-packet cone. That report also emits PR1014 for the routed `clk_d` and `spi_clk_d` nets. The report places the onboard `clk` input on pin 4 with the device's `LPLL1_T_in` capability and shows the primary clock resource in use; the external `spi_clk` input is pin 25 and is not a dedicated clock input in this package. The current constraints preserve these physical mappings and do not force a speculative pin change or unsafe clock constraint. Recheck PR1014 on the final P&R run: it is a clock-input/topology warning, not evidence that the CRC FSM is combinationally unsafe. The permanent CDC constraint is the one-line clock-group exception in `fpga/constraints/tang_nano_20k.sdc`:
+
+```tcl
+set_clock_groups -asynchronous -group [get_clocks {clk27}] -group [get_clocks {spi_clk}]
+```
+
+Do not program hardware while timing or control-loop warnings remain unresolved. In particular, PR1014 should be documented with the generated clock report and device pin capabilities rather than suppressed by a warning filter.
 
 ## Synthesis-warning troubleshooting
 

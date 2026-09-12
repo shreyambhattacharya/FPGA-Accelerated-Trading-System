@@ -6,6 +6,4 @@ create_clock -name clk27 -period 37.037 [get_ports {clk}]
 create_clock -name spi_clk -period 200.000 [get_ports {spi_clk}]
 
 # The packet FIFOs are intentionally asynchronous CDC boundaries.
-set_clock_groups -asynchronous \
-    -group [get_clocks {clk27}] \
-    -group [get_clocks {spi_clk}]
+set_clock_groups -asynchronous -group [get_clocks {clk27}] -group [get_clocks {spi_clk}]

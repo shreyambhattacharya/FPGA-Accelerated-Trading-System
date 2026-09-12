@@ -11,6 +11,12 @@ SPI pins -> SPI mode-0 slave -> RX packet FIFO -> loopback validator
 
 The current processing logic is intentionally small. It checks the sync/version byte, message type, and CRC, then returns a deterministic `STATUS` packet. A valid `LOOPBACK` request receives status `OK`; malformed 32-byte packets receive a specific error status while preserving the request sequence number.
 
+## Timing-hardened packet validation
+
+The loopback stage validates and generates CRC-8/ATM values with the standalone `fpga/rtl/protocol/crc8_engine.sv`. It accepts one byte per `clk27` cycle and consumes the first 31 bytes of each 32-byte packet; the final byte is the transmitted CRC. The request and response CRC streams are separated by registered FSM states, so the old full-packet combinational CRC/response cone is no longer a single-cycle `clk27` path. The engine reports `done` after the final byte edge and holds the result until the next stream.
+
+At 27 MHz, each 31-byte CRC stream takes 31 system-clock cycles (about 1.15 us). The loopback FSM takes approximately 67 `clk27` cycles from request acceptance to `response_valid`, including request validation, response construction, and response CRC. The host protocol still uses the existing 32-byte request, 32-byte turnaround, and 32-byte response transfers. At 5 MHz SPI, the 32-byte turnaround supplies 51.2 us, or about 1,382 `clk27` cycles, leaving more than 1,300 system-clock cycles of processing margin.
+
 ## Pi responsibilities
 
 The Raspberry Pi 5 is the SPI master. It will own Linux networking, TLS/WebSockets, external market-data parsing, normalization, configuration, logs, historical replay, backtesting, portfolio state, final risk approval, and paper-broker APIs. The FPGA never needs to understand an external broker's JSON or wire framing.

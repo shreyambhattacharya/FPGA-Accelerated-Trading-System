@@ -2,7 +2,7 @@
 
 The transport benchmark record for each request/response contains the packet sequence, send timestamp, receive timestamp, round-trip duration, and success/failure classification. The host reports count, missing/corrupt/sequence errors, average, minimum, maximum, P50, P95, P99, total elapsed time, and effective packets/second.
 
-The current loopback exchange includes three 32-byte transfers, so its round trip includes request, turnaround, and response framing. That is an intentional transport measurement definition. Market events are consumed by the dispatcher and state engine and produce no loopback response packet.
+The current loopback exchange includes three 32-byte transfers, so its round trip includes request, turnaround, and response framing. That is an intentional transport measurement definition. Market events are consumed by the dispatcher, market state, and internal candidate-signal engine; they produce no loopback response packet. Control packets use the loopback path only as an ACK.
 
 For market events, the service path is measured separately in RTL by the
 dispatcher/engine testbench: a packet is CRC-checked, normalized, accepted or
@@ -15,8 +15,10 @@ cycles or the next trade after 13 cycles when the feature consumer was always
 ready. Those were theoretical raw-feature bounds of 2,250,000 quotes/s and
 2,076,923 trades/s at 27 MHz. The normalized feature layer has a
 data-dependent divider schedule, so its measured service latencies are listed
-in the current implementation section below; all figures exclude SPI wire
-time, FIFO/dispatcher occupancy, host scheduling, and future consumers.
+in the current implementation section below. The candidate-signal stage adds
+one registered `clk27` cycle after a feature is accepted; all figures exclude
+SPI wire time, FIFO/dispatcher occupancy, host scheduling, and future
+consumers.
 
 The recorded software-loopback result is labeled `mode=SIMULATION`; the
 host's `mode=REAL_HARDWARE` is reserved for the Linux spidev path. FPGA RTL
@@ -33,8 +35,8 @@ mode=SIMULATION
 transport=software-loopback
 packets_sent=1000 packets_returned=1000 failures=0 missing=0 corrupted=0
 other_failures=0 sequence_errors=0
-elapsed_ns=647700 effective_packets_per_second=1.54392e+06
-rtt_ns: min=400 p50=500 p95=500 p99=500 max=1700 average_us=0.4584
+elapsed_ns=595800 effective_packets_per_second=1.67842e+06
+rtt_ns: min=400 p50=400 p95=500 p99=500 max=1800 average_us=0.4338
 ```
 
 This is a reproducible PC result for packet serialization and the software
@@ -137,3 +139,34 @@ bit-iteration clocks; the remaining cycles cover registered state/history
 access, raw feature calculation, scale/scheduler control, state/history commit,
 and registered feature output. Early-exit records, such as the 224-cycle warm
 quote, skip invalid divisions and are correspondingly shorter.
+
+## Candidate-signal layer update
+
+The candidate-signal engine adds threshold comparisons, per-symbol edge and
+cooldown state, reason-bit generation, and one registered output stage. It
+does not add another divider or duplicate the market arithmetic. The final
+Gowin matrix was rerun with the signal/configuration RTL and the same target,
+constraints, and physical pins:
+
+| Symbols | Logic / device | FF / device | LUT + ALU | BSRAM | P&R RAM16 | DSP | `clk27` Fmax | `spi_clk` Fmax | setup / hold slack | levels |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| 4 | 6,787 / 20,736 (33%) | 4,514 / 15,750 (30%) | 4,053 + 1,390 | 7 / 46 | 224 | 4.5 / 24 | 58.876 MHz | 107.252 MHz | 20.052 / 0.074 ns | 20 / 8 |
+| 8 | 6,757 / 20,736 (33%) | 4,519 / 15,750 (30%) | 4,024 + 1,389 | 7 / 46 | 224 | 4.5 / 24 | 67.423 MHz | 87.609 MHz | 22.205 / 0.074 ns | 20 / 9 |
+| 16 | 6,630 / 20,736 (32%) | 4,528 / 15,750 (30%) | 3,896 + 1,390 | 7 / 46 | 224 | 4.5 / 24 | 59.049 MHz | 93.948 MHz | 20.102 / 0.074 ns | 20 / 9 |
+| 32 | 7,663 / 20,736 (37%) | 4,545 / 15,750 (30%) | 4,329 + 1,390 | 11 / 46 | 324 | 4.5 / 24 | 57.411 MHz | 105.815 MHz | 19.619 / 0.074 ns | 12 / 8 |
+
+All points have zero setup and hold TNS. At N32, adding the signal/config
+stage to the normalized-feature result changes resources by +347 device logic
+(7,316 → 7,663), +347 LUTs (3,982 → 4,329), and +67 FFs (4,478 → 4,545).
+BSRAM, P&R RAM16, ALU, and DSP counts are unchanged. The N32 `clk27` Fmax
+changes from 68.821 MHz to 57.411 MHz, leaving 30.411 MHz of headroom over the
+27 MHz target but 2.589 MHz below the preferred 60 MHz analysis goal. The
+current N32 critical path is in the market feature/history cone; the signal
+stage contributes timing pressure but no new arithmetic resource class.
+
+The direct RTL latency measurement is one `clk27` cycle from a registered
+feature record to its registered signal record. Event-to-signal measurements
+were 225 cycles for the warm quote, 537 cycles for the fully warm trade, and
+536 cycles for the fully warm quote with all five normalized divisions active.
+These are service-path measurements and exclude SPI wire time, CDC FIFO
+occupancy, dispatcher work, host scheduling, and any future signal consumer.

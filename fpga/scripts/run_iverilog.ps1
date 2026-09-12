@@ -16,6 +16,8 @@ $sources = @(
     (Join-Path $repoRoot 'fpga\rtl\math\unsigned_divider.sv'),
     (Join-Path $repoRoot 'fpga\rtl\math\feature_normalizer.sv'),
     (Join-Path $repoRoot 'fpga\rtl\market\market_state_engine.sv'),
+    (Join-Path $repoRoot 'fpga\rtl\strategy\strategy_config.sv'),
+    (Join-Path $repoRoot 'fpga\rtl\strategy\signal_engine.sv'),
     (Join-Path $repoRoot 'fpga\rtl\top\trading_spi_top.sv'),
     (Join-Path $repoRoot 'fpga\tb\tb_trading_spi_top.sv')
 )
@@ -64,6 +66,24 @@ if ($LASTEXITCODE -ne 0) { throw "Divider simulation compilation failed" }
 vvp $dividerOutput
 if ($LASTEXITCODE -ne 0) { throw "Divider simulation failed" }
 
+$configOutput = Join-Path $buildDir 'tb_strategy_config.vvp'
+iverilog -g2012 -Wall -I (Join-Path $repoRoot 'fpga\rtl\protocol') -s tb_strategy_config -o $configOutput `
+    (Join-Path $repoRoot 'fpga\rtl\strategy\strategy_config.sv') `
+    (Join-Path $repoRoot 'fpga\tb\tb_strategy_config.sv')
+if ($LASTEXITCODE -ne 0) { throw "Strategy configuration simulation compilation failed" }
+
+vvp $configOutput
+if ($LASTEXITCODE -ne 0) { throw "Strategy configuration simulation failed" }
+
+$signalOutput = Join-Path $buildDir 'tb_signal_engine.vvp'
+iverilog -g2012 -Wall -I (Join-Path $repoRoot 'fpga\rtl\protocol') -s tb_signal_engine -o $signalOutput `
+    (Join-Path $repoRoot 'fpga\rtl\strategy\signal_engine.sv') `
+    (Join-Path $repoRoot 'fpga\tb\tb_signal_engine.sv')
+if ($LASTEXITCODE -ne 0) { throw "Signal-engine simulation compilation failed" }
+
+vvp $signalOutput
+if ($LASTEXITCODE -ne 0) { throw "Signal-engine simulation failed" }
+
 $marketOutput = Join-Path $buildDir 'tb_market_state_engine.vvp'
 iverilog -g2012 -Wall -I (Join-Path $repoRoot 'fpga\rtl\protocol') -s tb_market_state_engine -o $marketOutput `
     (Join-Path $repoRoot 'fpga\rtl\math\unsigned_divider.sv') `
@@ -80,6 +100,7 @@ iverilog -g2012 -Wall -I (Join-Path $repoRoot 'fpga\rtl\protocol') -s tb_market_
     (Join-Path $repoRoot 'fpga\rtl\math\unsigned_divider.sv') `
     (Join-Path $repoRoot 'fpga\rtl\math\feature_normalizer.sv') `
     (Join-Path $repoRoot 'fpga\rtl\market\market_state_engine.sv') `
+    (Join-Path $repoRoot 'fpga\rtl\strategy\signal_engine.sv') `
     (Join-Path $repoRoot 'fpga\tb\tb_market_latency.sv')
 if ($LASTEXITCODE -ne 0) { throw "Market-latency simulation compilation failed" }
 

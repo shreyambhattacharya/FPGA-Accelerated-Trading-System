@@ -10,6 +10,13 @@ Run the complete local suite with:
 
 The script runs the existing SPI/CDC/CRC/loopback regressions plus:
 
+- `tb_strategy_config.sv`: fifteen valid runtime writes covering global
+  enables, all threshold registers, cooldown, symbol enable, and slot reset,
+  plus two invalid commands;
+- `tb_signal_engine.sv`: directed long/short threshold equality, invalid
+  features, edge triggering, cooldown-expiry repeats, reversal, enable/disable
+  re-arming, symbol isolation, slot reset, and signal backpressure;
+
 - `tb_market_state_engine.sv`: directed first-bid/first-ask, valid and
   crossed quotes, spread/midpoint, signed imbalance, side isolation, trade
   isolation, zero quantity, ring fill/replacement, momentum warm-up/wrap,
@@ -18,7 +25,8 @@ The script runs the existing SPI/CDC/CRC/loopback regressions plus:
 - `tb_unsigned_divider.sv`: 10 directed divider/reset/busy cases plus 5,000
   deterministic 101-bit-by-64-bit unsigned quotient cases;
 - `tb_market_latency.sv`: warm-up and fully warm feature-service latency with
-  all five normalized divide operations active;
+  all five normalized divide operations active, plus the incremental
+  feature-to-signal stage latency;
 - `tb_market_parameter.sv`: compile/elaborate/run smoke points for
   `NUM_SYMBOLS=1,4,8,16,32`;
 - `tb_market_n32_stress.sv`: deterministic N32 round-robin, hot-symbol,
@@ -35,15 +43,18 @@ symbols, quote/trade interleaving, duplicate/stale and bad-side cases, crossed
 quotes, zero quantity, large prices, and maximum-width price/quantity fields.
 
 The same fixed seed (`0x5EED`) at 10,000 events produced exactly 9,032
-accepted feature records, 967 engine rejections, 1 dispatcher error, and 0
+accepted feature records/signals, 967 engine rejections, 1 dispatcher error,
+and 0 mismatches. A 100,000-event run produced exactly 90,769 accepted
+feature records/signals, 9,230 engine rejections, 1 dispatcher error, and 0
 mismatches. The counts are reported by the test, not substituted into the
 oracle to make a run pass.
 
-The normalized fields are compared as part of every feature tuple, including
-floor VWAP quotient, Q1.15 imbalance, signed bps x100 ratios, raw
-midpoint-minus-VWAP, and all validity flags. No 100,000-event replay was run
-because the 10,000-event run already exercises the same exact comparison while
-keeping the local Icarus regression practical.
+The normalized fields and appended signal tuple are compared for every
+accepted feature, including floor VWAP quotient, Q1.15 imbalance, signed bps
+x100 ratios, raw midpoint-minus-VWAP, all validity flags, action, score, and
+reason bits. The 100,000-event run was executed separately as a deterministic
+long stress replay; the checked-in default regression remains 1,000 and
+10,000 events to keep the routine local run practical.
 
 The N32 stressbench completed with:
 
@@ -61,6 +72,20 @@ The C++ utility continues to exercise packet serialization/parsing and the
 deterministic software transport. Its output labels simulation versus real
 hardware and does not present software timing as FPGA timing.
 
+The standalone signal bench reported:
+
+```text
+tb_signal_engine: PASS directed=20 interleaved_symbols=32
+tb_strategy_config: PASS writes=15 slot_reset=1 invalid=2
+```
+
+The integrated latency bench reported 224 feature cycles for a warm quote,
+536 for a fully warm trade, and 535 for a fully warm quote with all five
+normalized divisions active. The signal stage added exactly one `clk27` cycle,
+for event-to-signal latencies of 225, 537, and 536 cycles respectively.
+Candidate records are internal at this stage; there is no signal packet
+consumer on the physical SPI result path.
+
 ## Vendor implementation checks
 
 `fpga/scripts/run_gowin_pnr.tcl` runs the default top through Gowin synthesis,
@@ -69,13 +94,14 @@ place-and-route, timing, and bitstream generation. The matrix driver
 using physical-IO-preserving wrappers. Reports stay under the ignored
 `fpga/gowin/validation` directory.
 
-The final matrix has zero setup/hold TNS at both `clk27` and `spi_clk` for all
-four points. The post-P&R `clk27` Fmax values are 68.327, 72.627, 82.566, and
-75.516 MHz for the archived raw-feature build; the normalized-feature build
-measures 66.439, 62.427, 60.565, and 68.821 MHz for N4/N8/N16/N32. The
-normalized P&R logic levels are 19, 19, 21, and 20. It still reports PR1014
-for generic routing of `clk_d` and `spi_clk_d`; this is documented in the
-bring-up guide and is not suppressed.
+The candidate-signal matrix has zero setup/hold TNS at both `clk27` and
+`spi_clk` for all four points. The post-P&R `clk27` Fmax values are 58.876,
+67.423, 59.049, and 57.411 MHz for N4/N8/N16/N32; `spi_clk` Fmax is 107.252,
+87.609, 93.948, and 105.815 MHz. Candidate-signal logic levels are 20, 20,
+20, and 12 on `clk27`. The N32 point has 30.411 MHz of headroom over the
+27 MHz system target, though it is below the preferred 60 MHz analysis goal.
+The run still reports PR1014 for generic routing of `clk_d` and `spi_clk_d`;
+this is documented in the bring-up guide and is not suppressed.
 
 The host loopback regression also passed in its software transport mode:
 

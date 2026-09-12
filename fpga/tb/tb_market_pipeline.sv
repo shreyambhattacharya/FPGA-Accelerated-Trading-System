@@ -76,12 +76,73 @@ module tb_market_pipeline;
     wire [15:0] event_reject_symbol_id;
     wire [31:0] event_reject_sequence;
 
-    reg [255:0] packet_memory [0:9999];
+    wire strategy_enable;
+    wire long_enable;
+    wire short_enable;
+    wire signed [31:0] long_min_momentum_bps_x100;
+    wire signed [31:0] short_max_momentum_bps_x100;
+    wire signed [31:0] long_min_vwap_delta_bps_x100;
+    wire signed [31:0] short_max_vwap_delta_bps_x100;
+    wire signed [15:0] long_min_imbalance_q15;
+    wire signed [15:0] short_max_imbalance_q15;
+    wire signed [31:0] max_spread_bps_x100;
+    wire [TRADE_ACC_W-1:0] min_rolling_volume;
+    wire [31:0] signal_cooldown_events;
+    wire [NUM_SYMBOLS-1:0] symbol_enable;
+    reg cfg_write_valid = 1'b0;
+    wire cfg_write_ready;
+    reg [7:0] cfg_subcommand = 8'd0;
+    reg [15:0] cfg_symbol_id = 16'd0;
+    reg [63:0] cfg_data64 = 64'd0;
+    reg [31:0] cfg_data32 = 32'd0;
+    reg [15:0] cfg_flags = 16'd0;
+    wire [7:0] cfg_status;
+    wire slot_reset_valid;
+    wire [15:0] slot_reset_symbol_id;
+    wire market_slot_reset_ready;
+    wire signal_slot_reset_ready;
+    wire slot_reset_ready = market_slot_reset_ready && signal_slot_reset_ready;
+
+    wire signal_feature_ready;
+    wire signal_valid;
+    wire [15:0] signal_symbol_id;
+    wire [31:0] signal_sequence;
+    wire [1:0] signal_action;
+    wire [3:0] signal_score;
+    wire [15:0] signal_reason_bits;
+
+    reg [255:0] packet_memory [0:99999];
     integer event_count;
     integer event_index;
     reg [1023:0] event_file;
 
     always #5 clk = ~clk;
+
+    strategy_config #(
+        .NUM_SYMBOLS(NUM_SYMBOLS),
+        .TRADE_ACC_W(TRADE_ACC_W)
+    ) config_dut (
+        .clk(clk), .reset_n(reset_n),
+        .cfg_write_valid(cfg_write_valid), .cfg_write_ready(cfg_write_ready),
+        .cfg_subcommand(cfg_subcommand), .cfg_symbol_id(cfg_symbol_id),
+        .cfg_data64(cfg_data64), .cfg_data32(cfg_data32), .cfg_flags(cfg_flags),
+        .cfg_status(cfg_status),
+        .strategy_enable(strategy_enable), .long_enable(long_enable),
+        .short_enable(short_enable),
+        .long_min_momentum_bps_x100(long_min_momentum_bps_x100),
+        .short_max_momentum_bps_x100(short_max_momentum_bps_x100),
+        .long_min_vwap_delta_bps_x100(long_min_vwap_delta_bps_x100),
+        .short_max_vwap_delta_bps_x100(short_max_vwap_delta_bps_x100),
+        .long_min_imbalance_q15(long_min_imbalance_q15),
+        .short_max_imbalance_q15(short_max_imbalance_q15),
+        .max_spread_bps_x100(max_spread_bps_x100),
+        .min_rolling_volume(min_rolling_volume),
+        .signal_cooldown_events(signal_cooldown_events),
+        .symbol_enable(symbol_enable),
+        .slot_reset_valid(slot_reset_valid),
+        .slot_reset_symbol_id(slot_reset_symbol_id),
+        .slot_reset_ready(slot_reset_ready)
+    );
 
     packet_dispatcher #(.NUM_SYMBOLS(NUM_SYMBOLS)) dispatcher (
         .clk(clk), .reset_n(reset_n),
@@ -95,6 +156,10 @@ module tb_market_pipeline;
         .event_timestamp_ns(event_timestamp_ns), .event_price(event_price),
         .event_quantity(event_quantity), .event_side(event_side),
         .event_sequence(event_sequence), .event_flags(event_flags),
+        .control_valid(), .control_ready(1'b0),
+        .control_subcommand(), .control_symbol_id(),
+        .control_data64(), .control_data32(), .control_flags(),
+        .control_status(8'h00),
         .dispatch_error_pulse(dispatch_error_pulse),
         .dispatch_error_reason(dispatch_error_reason),
         .dispatch_error_symbol_id(dispatch_error_symbol_id),
@@ -113,7 +178,9 @@ module tb_market_pipeline;
         .event_timestamp_ns(event_timestamp_ns), .event_price(event_price),
         .event_quantity(event_quantity), .event_side(event_side),
         .event_sequence(event_sequence), .event_flags(event_flags),
-        .feature_valid(feature_valid), .feature_ready(1'b1),
+        .slot_reset_valid(slot_reset_valid), .slot_reset_symbol_id(slot_reset_symbol_id),
+        .slot_reset_ready(market_slot_reset_ready),
+        .feature_valid(feature_valid), .feature_ready(signal_feature_ready),
         .feature_symbol_id(feature_symbol_id), .feature_sequence(feature_sequence),
         .feature_bid_price(feature_bid_price), .feature_bid_quantity(feature_bid_quantity),
         .feature_ask_price(feature_ask_price), .feature_ask_quantity(feature_ask_quantity),
@@ -143,6 +210,45 @@ module tb_market_pipeline;
         .event_reject_symbol_id(event_reject_symbol_id), .event_reject_sequence(event_reject_sequence)
     );
 
+    signal_engine #(
+        .NUM_SYMBOLS(NUM_SYMBOLS),
+        .TRADE_ACC_W(TRADE_ACC_W)
+    ) signal_dut (
+        .clk(clk), .reset_n(reset_n),
+        .feature_valid(feature_valid), .feature_ready(signal_feature_ready),
+        .feature_symbol_id(feature_symbol_id), .feature_sequence(feature_sequence),
+        .feature_spread_bps_x100(feature_spread_bps_x100),
+        .feature_spread_valid(feature_spread_bps_x100_valid),
+        .feature_momentum_bps_x100(feature_momentum_bps_x100),
+        .feature_momentum_valid(feature_momentum_bps_x100_valid),
+        .feature_imbalance_q15(feature_imbalance_normalized),
+        .feature_imbalance_valid(feature_imbalance_normalized_valid),
+        .feature_vwap(feature_vwap), .feature_vwap_valid(feature_vwap_quotient_valid),
+        .feature_midpoint_minus_vwap(feature_midpoint_minus_vwap),
+        .feature_midpoint_minus_vwap_bps_x100(feature_midpoint_minus_vwap_bps_x100),
+        .feature_vwap_delta_valid(feature_midpoint_minus_vwap_bps_x100_valid),
+        .feature_rolling_volume(feature_rolling_volume),
+        .strategy_enable(strategy_enable), .long_enable(long_enable),
+        .short_enable(short_enable),
+        .long_min_momentum_bps_x100(long_min_momentum_bps_x100),
+        .short_max_momentum_bps_x100(short_max_momentum_bps_x100),
+        .long_min_vwap_delta_bps_x100(long_min_vwap_delta_bps_x100),
+        .short_max_vwap_delta_bps_x100(short_max_vwap_delta_bps_x100),
+        .long_min_imbalance_q15(long_min_imbalance_q15),
+        .short_max_imbalance_q15(short_max_imbalance_q15),
+        .max_spread_bps_x100(max_spread_bps_x100),
+        .min_rolling_volume(min_rolling_volume),
+        .signal_cooldown_events(signal_cooldown_events),
+        .symbol_enable(symbol_enable),
+        .slot_reset_valid(slot_reset_valid),
+        .slot_reset_symbol_id(slot_reset_symbol_id),
+        .slot_reset_ready(signal_slot_reset_ready),
+        .signal_valid(signal_valid), .signal_ready(1'b1),
+        .signal_symbol_id(signal_symbol_id), .signal_sequence(signal_sequence),
+        .signal_action(signal_action), .signal_score(signal_score),
+        .signal_reason_bits(signal_reason_bits)
+    );
+
     always @(posedge clk) begin
         #1;
         if (dispatch_error_pulse)
@@ -169,16 +275,53 @@ module tb_market_pipeline;
                      feature_midpoint_minus_vwap, feature_midpoint_minus_vwap_valid,
                      feature_midpoint_minus_vwap_bps_x100,
                      feature_midpoint_minus_vwap_bps_x100_valid);
+        if (signal_valid)
+            $display("SIGNAL %04h %08h %01h %01h %04h",
+                     signal_symbol_id, signal_sequence, signal_action,
+                     signal_score, signal_reason_bits);
     end
+
+    task automatic write_config;
+        input [7:0] subcommand;
+        input [63:0] data64_value;
+        input [31:0] data32_value;
+        begin
+            @(negedge clk);
+            while (!cfg_write_ready)
+                @(negedge clk);
+            cfg_subcommand = subcommand;
+            cfg_data64 = data64_value;
+            cfg_data32 = data32_value;
+            cfg_write_valid = 1'b1;
+            @(posedge clk);
+            #1;
+            if (cfg_status !== `STATUS_OK)
+                $fatal(1, "configuration write rejected: %02h", cfg_status);
+            cfg_write_valid = 1'b0;
+        end
+    endtask
 
     initial begin
         if (!$value$plusargs("EVENT_FILE=%s", event_file)) $fatal(1, "EVENT_FILE plusarg is required");
         if (!$value$plusargs("EVENT_COUNT=%d", event_count)) $fatal(1, "EVENT_COUNT plusarg is required");
-        if (event_count > 10000) $fatal(1, "event count exceeds replay memory");
+        if (event_count > 100000) $fatal(1, "event count exceeds replay memory");
         $readmemh(event_file, packet_memory);
 
         #12;
         reset_n = 1'b1;
+        // End-to-end differential configuration. These intentionally simple
+        // TEST / DEVELOPMENT DEFAULTS make both directions observable in a
+        // deterministic replay; they are not profitability parameters.
+        write_config(`CONTROL_SET_GLOBAL_FLAGS, 64'd7, 32'd0);
+        write_config(`CONTROL_SET_LONG_MOMENTUM, 64'd0, 32'd0);
+        write_config(`CONTROL_SET_SHORT_MOMENTUM, 64'd0, 32'd0);
+        write_config(`CONTROL_SET_LONG_VWAP_DELTA, 64'd0, 32'd0);
+        write_config(`CONTROL_SET_SHORT_VWAP_DELTA, 64'd0, 32'd0);
+        write_config(`CONTROL_SET_LONG_IMBALANCE, 64'd0, 32'd0);
+        write_config(`CONTROL_SET_SHORT_IMBALANCE, 64'd0, 32'd0);
+        write_config(`CONTROL_SET_MAX_SPREAD, 64'd0, 32'h7fffffff);
+        write_config(`CONTROL_SET_MIN_VOLUME, 64'd0, 32'd0);
+        write_config(`CONTROL_SET_COOLDOWN, 64'd0, 32'd3);
         for (event_index = 0; event_index < event_count; event_index = event_index + 1) begin
             while (!packet_ready) begin @(posedge clk); #1; end
             @(negedge clk);

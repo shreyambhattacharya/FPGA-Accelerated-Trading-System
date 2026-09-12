@@ -75,6 +75,8 @@ module tb_market_state_engine;
         .event_timestamp_ns(event_timestamp_ns), .event_price(event_price),
         .event_quantity(event_quantity), .event_side(event_side),
         .event_sequence(event_sequence), .event_flags(event_flags),
+        .slot_reset_valid(1'b0), .slot_reset_symbol_id(16'd0),
+        .slot_reset_ready(),
         .feature_valid(feature_valid), .feature_ready(feature_ready),
         .feature_symbol_id(feature_symbol_id), .feature_sequence(feature_sequence),
         .feature_bid_price(feature_bid_price), .feature_bid_quantity(feature_bid_quantity),

@@ -6,9 +6,10 @@
 //
 // The dispatcher is deliberately independent of SPI timing. It consumes one
 // complete packet from the system-domain RX FIFO, validates the packet CRC,
-// and then routes LOOPBACK packets to loopback_engine or QUOTE/TRADE packets
-// to the market event interface. Unsupported packets continue to the
-// loopback status path so the existing diagnostic response remains intact.
+// and then routes LOOPBACK packets to loopback_engine, QUOTE/TRADE packets to
+// the market event interface, and CONTROL packets to the runtime strategy
+// configuration interface. Unsupported packets continue to the loopback
+// status path so the existing diagnostic response remains intact.
 module packet_dispatcher #(
     parameter integer NUM_SYMBOLS = 4
 ) (
@@ -35,6 +36,15 @@ module packet_dispatcher #(
     output wire [31:0]             event_sequence,
     output wire [15:0]             event_flags,
 
+    output wire                    control_valid,
+    input  wire                    control_ready,
+    output wire [7:0]              control_subcommand,
+    output wire [15:0]             control_symbol_id,
+    output wire [63:0]             control_data64,
+    output wire [31:0]             control_data32,
+    output wire [15:0]             control_flags,
+    input  wire [7:0]              control_status,
+
     output reg                     dispatch_error_pulse,
     output reg [7:0]               dispatch_error_reason,
     output reg [15:0]              dispatch_error_symbol_id,
@@ -45,6 +55,7 @@ module packet_dispatcher #(
     localparam [2:0] CLASSIFY      = 3'd2;
     localparam [2:0] ROUTE_EVENT   = 3'd3;
     localparam [2:0] ROUTE_LOOPBACK = 3'd4;
+    localparam [2:0] ROUTE_CONTROL  = 3'd5;
 
     reg [2:0] state = IDLE;
     reg [`PACKET_BITS-1:0] packet_reg = 0;
@@ -62,6 +73,12 @@ module packet_dispatcher #(
     reg [7:0] event_side_reg;
     reg [31:0] event_sequence_reg;
     reg [15:0] event_flags_reg;
+    reg control_valid_reg = 1'b0;
+    reg [7:0] control_subcommand_reg;
+    reg [15:0] control_symbol_id_reg;
+    reg [63:0] control_data64_reg;
+    reg [31:0] control_data32_reg;
+    reg [15:0] control_flags_reg;
 
     wire packet_is_filler = (packet_in == {`PACKET_BITS{1'b0}});
     wire accepted = packet_valid && packet_ready;
@@ -89,6 +106,12 @@ module packet_dispatcher #(
     assign event_side = event_side_reg;
     assign event_sequence = event_sequence_reg;
     assign event_flags = event_flags_reg;
+    assign control_valid = control_valid_reg;
+    assign control_subcommand = control_subcommand_reg;
+    assign control_symbol_id = control_symbol_id_reg;
+    assign control_data64 = control_data64_reg;
+    assign control_data32 = control_data32_reg;
+    assign control_flags = control_flags_reg;
 
     crc8_engine crc8_engine_i (
         .clk(clk),
@@ -119,6 +142,12 @@ module packet_dispatcher #(
             event_side_reg <= 8'h00;
             event_sequence_reg <= 32'h00000000;
             event_flags_reg <= 16'h0000;
+            control_valid_reg <= 1'b0;
+            control_subcommand_reg <= 8'h00;
+            control_symbol_id_reg <= 16'h0000;
+            control_data64_reg <= 64'h0000000000000000;
+            control_data32_reg <= 32'h00000000;
+            control_flags_reg <= 16'h0000;
             dispatch_error_pulse <= 1'b0;
             dispatch_error_reason <= 8'h00;
             dispatch_error_symbol_id <= 16'h0000;
@@ -186,6 +215,14 @@ module packet_dispatcher #(
                         event_valid_reg <= 1'b1;
                         state <= ROUTE_EVENT;
                     end
+                end else if (packet_reg[247:240] == `MSG_CONTROL) begin
+                    control_subcommand_reg <= packet_reg[63:56];
+                    control_symbol_id_reg <= packet_reg[239:224];
+                    control_data64_reg <= packet_reg[159:96];
+                    control_data32_reg <= packet_reg[95:64];
+                    control_flags_reg <= packet_reg[23:8];
+                    control_valid_reg <= 1'b1;
+                    state <= ROUTE_CONTROL;
                 end else begin
                     // Unsupported types receive STATUS_BAD_TYPE from the
                     // existing loopback engine.
@@ -198,6 +235,18 @@ module packet_dispatcher #(
                 if (event_valid_reg && event_ready) begin
                     event_valid_reg <= 1'b0;
                     state <= IDLE;
+                end
+            end
+
+            ROUTE_CONTROL: begin
+                if (control_valid_reg && control_ready) begin
+                    control_valid_reg <= 1'b0;
+                    // A control write is acknowledged as a status response
+                    // through the existing loopback/CRC response path.
+                    loopback_status_override_valid_reg <= 1'b1;
+                    loopback_status_override_reg <= control_status;
+                    loopback_valid_reg <= 1'b1;
+                    state <= ROUTE_LOOPBACK;
                 end
             end
 

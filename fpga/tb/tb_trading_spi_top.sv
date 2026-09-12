@@ -67,6 +67,29 @@ module tb_trading_spi_top;
         end
     endfunction
 
+    function automatic [255:0] make_control;
+        input [7:0] subcommand_value;
+        input [15:0] symbol_value;
+        input [63:0] data64_value;
+        input [31:0] data32_value;
+        input [31:0] seq_value;
+        reg [255:0] packet;
+        begin
+            packet = 256'd0;
+            packet[255:248] = `PROTOCOL_SYNC_VERSION;
+            packet[247:240] = `MSG_CONTROL;
+            packet[239:224] = symbol_value;
+            packet[223:160] = 64'd0;
+            packet[159:96]  = data64_value;
+            packet[95:64]   = data32_value;
+            packet[63:56]   = subcommand_value;
+            packet[55:24]   = seq_value;
+            packet[23:8]    = 16'd0;
+            packet[7:0]     = crc8_packet(packet);
+            make_control = packet;
+        end
+    endfunction
+
     function automatic [7:0] byte_of;
         input [255:0] packet;
         input integer index;
@@ -177,6 +200,24 @@ module tb_trading_spi_top;
         if (first_response_bit !== 1'b1) $fatal(1, "first response bit was not byte 0 MSB");
         if (last_response_bit !== response[0]) $fatal(1, "last response bit was not CRC LSB");
 
+        // CRC-valid control packets update the runtime configuration bank
+        // and use the existing loopback status response as their ACK.
+        request = make_control(`CONTROL_SET_GLOBAL_FLAGS, 16'd0, 64'd7, 32'd0, 32'd18);
+        exchange_loopback(request, response, first_response_bit, last_response_bit);
+        if (byte_of(response, 24) !== `STATUS_OK)
+            $fatal(1, "control write did not return STATUS_OK");
+
+        request = make_control(`CONTROL_SET_SYMBOL_ENABLE, 16'd99, 64'd0, 32'd0, 32'd19);
+        exchange_loopback(request, response, first_response_bit, last_response_bit);
+        if (byte_of(response, 24) !== `STATUS_BAD_CONTROL)
+            $fatal(1, "invalid control did not return STATUS_BAD_CONTROL");
+
+        request = make_control(`CONTROL_SET_LONG_MOMENTUM, 16'd0, 64'd0, 32'd0, 32'd20);
+        request[7:0] = request[7:0] ^ 8'h01;
+        exchange_loopback(request, response, first_response_bit, last_response_bit);
+        if (byte_of(response, 24) !== `STATUS_BAD_CHECKSUM)
+            $fatal(1, "corrupt control did not return STATUS_BAD_CHECKSUM");
+
         // A valid market quote uses the same SPI/FIFO/CRC ingress path but is
         // consumed by the normalized event pipeline and produces no loopback
         // response packet.
@@ -188,6 +229,12 @@ module tb_trading_spi_top;
             dut.market_state_engine_i.state_bank[0][64 +: 32] !== 32'd100 ||
             dut.market_state_engine_i.state_bank[0][225] !== 1'b1)
             $fatal(1, "market quote did not reach state engine through top");
+
+        request = make_control(`CONTROL_CLEAR_SYMBOL_STATE, 16'd0, 64'd0, 32'd0, 32'd21);
+        exchange_loopback(request, response, first_response_bit, last_response_bit);
+        if (byte_of(response, 24) !== `STATUS_OK ||
+            dut.market_state_engine_i.state_initialized[0] !== 1'b0)
+            $fatal(1, "runtime slot reset did not clear symbol state");
 
         for (seq_index = 18; seq_index < 23; seq_index = seq_index + 1) begin
             request = make_request(seq_index, `MSG_LOOPBACK, `PROTOCOL_SYNC_VERSION);
@@ -225,7 +272,7 @@ module tb_trading_spi_top;
         if (byte_of(response, 24) !== `STATUS_OK) $fatal(1, "incomplete frame poisoned next request");
         if (response[55:24] !== 32'd102) $fatal(1, "post-incomplete sequence failed");
 
-        if (dut.packet_error_count !== 3) $fatal(1, "packet error counter counted filler or missed malformed packet");
+        if (dut.packet_error_count !== 5) $fatal(1, "packet error counter counted filler or missed malformed packet: %0d", dut.packet_error_count);
         if (led[0] !== 1'b1 && led[0] !== 1'b0) $fatal(1, "heartbeat LED unknown");
         $display("tb_trading_spi_top: PASS");
         $finish;

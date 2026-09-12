@@ -1,24 +1,27 @@
 # FPGA-Accelerated Intraday Trading System
 
-This repository is the foundation for a paper-trading research and engineering platform built around a Raspberry Pi 5 and a Tang Nano 20K FPGA. The Pi owns networking, external market-data protocol handling, configuration, logging, portfolio state, and eventual paper-broker integration. The FPGA owns deterministic streaming work that benefits from fixed-width hardware, beginning with the SPI packet path and loopback validation.
+This repository is the foundation for a paper-trading research and engineering platform built around a Raspberry Pi 5 and a Tang Nano 20K FPGA. The Pi owns networking, external market-data protocol handling, configuration, logging, portfolio state, and eventual paper-broker integration. The FPGA owns deterministic streaming work that benefits from fixed-width hardware, beginning with the SPI packet path and loopback validation and now including candidate-only signal evaluation.
 
 This is not institutional colocated HFT, a profitability claim, or a live-money trading system. The project is paper-trading-only by design. No live order path is implemented.
 
-## Current milestone
+## Current milestone: configurable candidate-signal engine
 
 The market-data milestone preserves the data-plane foundation and adds a
-parameterized quote/trade state engine:
+parameterized quote/trade state engine followed by a runtime-configurable
+candidate-signal stage:
 
 ```text
 Pi SPI master
   -> 32-byte packet transfer
 Tang Nano SPI slave -> SPI-domain RX FIFO -> 27 MHz packet dispatcher
-                                      |-> LOOPBACK -> status/TX FIFO
-                                      `-> QUOTE/TRADE -> normalized event -> market state/features
+                                       |-> LOOPBACK -> status/TX FIFO
+                                       `-> QUOTE/TRADE -> normalized event -> market state/features
+                                                                    `-> candidate signal record
+                                       `-> CONTROL -> config/slot reset -> loopback ACK
   <- turnaround/response transfers remain available for diagnostic packets
 ```
 
-The packet format is fixed at 32 bytes, uses big-endian integer fields, and ends with CRC-8/ATM. The RTL is written in synthesizable SystemVerilog. The packet FIFOs are Gray-pointer asynchronous FIFOs with two-flop pointer synchronizers; SPI framing remains in the external SPI clock domain while validation, market-state updates, and diagnostic response generation run on the Tang Nano's onboard 27 MHz clock. The market engine uses integer micro-dollar prices, per-symbol sequence checks, quote/trade isolation, spread, midpoint, momentum, rolling volume, imbalance, and VWAP accumulators. Its market path is a serialized, registered read/modify/write pipeline with one shared 64x32 multiplier and one shared sequential 101/64 divider; it does not replicate feature engines per symbol. It emits the actual VWAP quotient, Q1.15 imbalance, spread/momentum/midpoint-VWAP basis-point fields scaled by 100, and explicit validity flags. Per-symbol state is held in a packed state bank with logical reset tracking, while the rolling histories remain independent. It emits no trading signals or broker orders. The host side is modern C++17 and uses Linux `spidev` when built and run on Raspberry Pi OS. A deterministic software transport and Python reference/differential model are included so protocol and market semantics can be exercised on a development PC without pretending that physical SPI was tested.
+The packet format is fixed at 32 bytes, uses big-endian integer fields, and ends with CRC-8/ATM. The RTL is written in synthesizable SystemVerilog. The packet FIFOs are Gray-pointer asynchronous FIFOs with two-flop pointer synchronizers; SPI framing remains in the external SPI clock domain while validation, market-state updates, and diagnostic response generation run on the Tang Nano's onboard 27 MHz clock. The market engine uses integer micro-dollar prices, per-symbol sequence checks, quote/trade isolation, spread, midpoint, momentum, rolling volume, imbalance, and VWAP accumulators. Its market path is a serialized, registered read/modify/write pipeline with one shared 64x32 multiplier and one shared sequential 101/64 divider; it does not replicate feature engines per symbol. It emits the actual VWAP quotient, Q1.15 imbalance, spread/momentum/midpoint-VWAP basis-point fields scaled by 100, and explicit validity flags. Per-symbol state is held in a packed state bank with logical reset tracking, while the rolling histories remain independent. The candidate-signal engine consumes those normalized fields, applies runtime thresholds and enables, emits a diagnostic `SIGNAL_NONE` or candidate record for every accepted feature, and never places an order. The host side is modern C++17 and uses Linux `spidev` when built and run on Raspberry Pi OS. A deterministic software transport, Python reference/differential model, and offline replay harness are included so protocol, market, and signal semantics can be exercised on a development PC without pretending that physical SPI was tested.
 
 ## Responsibilities and rationale
 
@@ -31,6 +34,7 @@ The FPGA does not parse JSON, TLS, TCP, or WebSocket framing. It is being used f
 ```text
 docs/                         Architecture, protocol, arithmetic, verification, benchmarks
 fpga/rtl/                     SPI slave, CDC FIFOs, reset, protocol, dispatcher, market RTL
+fpga/rtl/strategy/            Runtime strategy configuration and candidate-signal engine
 fpga/tb/                      Self-checking RTL testbenches
 fpga/constraints/             Tang Nano 20K CST pin assignments and timing constraints
 fpga/gowin/                   Gowin project file for GW2AR-18C
@@ -39,6 +43,7 @@ host/include/                 C++ protocol and transport interfaces
 host/src/                     Linux SPI and software-loopback implementations
 host/tests/                   C++ loopback/stress utility
 tools/reference_model/       Independent protocol and market reference models
+tools/replay/                 Offline normalized-event to candidate-signal replay harness
 tools/market_data_generator/ Deterministic synthetic quote/trade event stream
 ```
 
@@ -72,7 +77,7 @@ With Icarus Verilog installed:
 .\fpga\scripts\run_iverilog.ps1
 ```
 
-The script compiles the RTL and self-checking testbenches into a local build directory and runs them with `vvp`. The checks cover reset, valid loopback, sequential packets, checksum rejection, incomplete frames, mode-0 response timing, FIFO backpressure/overflow visibility, a 64-packet async FIFO stress test with unrelated clocks, standalone CRC vectors, the standalone 101/64 divider, directed raw and normalized market feature/edge-case tests, measured market latency, `NUM_SYMBOLS=1/4/8/16/32` elaboration, a 32-symbol state-isolation/backpressure/reset stressbench, and deterministic 1,000- and 10,000-event Python-versus-RTL differential replays. If Gowin is installed, `fpga/scripts/run_gowin_pnr.tcl` drives the default build and `fpga/scripts/run_gowin_matrix.ps1` drives the 4/8/16/32 resource/timing matrix through `gw_sh.exe`; implementation outputs remain ignored. The measured implementation matrix and the normalized feature-layer resource/timing delta are in [`docs/benchmarking.md`](docs/benchmarking.md).
+The script compiles the RTL and self-checking testbenches into a local build directory and runs them with `vvp`. The checks cover reset, valid loopback, sequential packets, checksum rejection, incomplete frames, mode-0 response timing, FIFO backpressure/overflow visibility, a 64-packet async FIFO stress test with unrelated clocks, standalone CRC vectors, the standalone 101/64 divider, runtime-configuration writes and slot reset, directed candidate-signal edge/cooldown/backpressure tests, directed raw and normalized market feature/edge-case tests, measured feature-to-signal latency, `NUM_SYMBOLS=1/4/8/16/32` elaboration, a 32-symbol state-isolation/backpressure/reset stressbench, and deterministic 1,000-, 10,000-, and 100,000-event Python-versus-RTL differential replays. If Gowin is installed, `fpga/scripts/run_gowin_pnr.tcl` drives the default build and `fpga/scripts/run_gowin_matrix.ps1` drives the 4/8/16/32 resource/timing matrix through `gw_sh.exe`; implementation outputs remain ignored. The measured implementation matrix and the candidate-signal resource/timing delta are in [`docs/benchmarking.md`](docs/benchmarking.md).
 
 ## Hardware still required
 
@@ -89,11 +94,11 @@ The exact wiring, power precautions, Gowin IDE flow, and Raspberry Pi commands a
 ## Roadmap
 
 1. Pi ↔ FPGA SPI foundation — complete
-2. Normalized quote/trade protocol and dispatcher — current milestone
-3. Parameterized market-state engine, normalized fixed-point feature layer, and latency/resource characterization — current milestone
-4. C++ real-time market-data receiver
-5. Full Pi → FPGA event/feature path
-6. Configurable signal FSM
+2. Normalized quote/trade protocol and dispatcher — complete
+3. Parameterized market-state engine and normalized fixed-point feature layer — complete
+4. Configurable candidate-signal engine and runtime control packets — current milestone
+5. C++ real-time market-data receiver
+6. Full Pi → FPGA event/feature/signal path
 7. Hardware risk checks
 8. Historical replay and strategy evaluation
 9. Paper broker integration

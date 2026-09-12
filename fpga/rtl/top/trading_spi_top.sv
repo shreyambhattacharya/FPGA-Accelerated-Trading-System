@@ -73,6 +73,14 @@ module trading_spi_top #(
     wire [7:0] dispatcher_event_side;
     wire [31:0] dispatcher_event_sequence;
     wire [15:0] dispatcher_event_flags;
+    wire dispatcher_control_valid;
+    wire dispatcher_control_ready;
+    wire [7:0] dispatcher_control_subcommand;
+    wire [15:0] dispatcher_control_symbol_id;
+    wire [63:0] dispatcher_control_data64;
+    wire [31:0] dispatcher_control_data32;
+    wire [15:0] dispatcher_control_flags;
+    wire [7:0] dispatcher_control_status;
     wire dispatcher_error_pulse;
     wire [7:0] dispatcher_error_reason;
     wire [15:0] dispatcher_error_symbol_id;
@@ -81,13 +89,14 @@ module trading_spi_top #(
     localparam integer TRADE_ACC_W = 32 + ((TRADE_WINDOW <= 1) ? 1 : $clog2(TRADE_WINDOW));
     localparam integer VWAP_ACC_W = 96 + ((VWAP_WINDOW <= 1) ? 1 : $clog2(VWAP_WINDOW));
     localparam integer VWAP_QTY_ACC_W = 32 + ((VWAP_WINDOW <= 1) ? 1 : $clog2(VWAP_WINDOW));
+    localparam integer SIGNAL_BUS_W = 16 + 32 + 2 + 4 + 16;
     localparam integer MARKET_FEATURE_BUS_W = 16 + 32 + 64 + 32 + 64 + 32 +
                                               64 + 1 + 64 + 1 + 65 + 1 +
                                               TRADE_ACC_W + 33 + 33 + 1 +
                                               VWAP_ACC_W + VWAP_QTY_ACC_W + 1 +
                                               64 + 1 + 16 + 1 + 32 + 1 + 32 + 1 +
                                               65 + 1 + 32 + 1 +
-                                              32 + 64 + 96 + 32;
+                                              32 + 64 + 96 + 32 + SIGNAL_BUS_W;
     wire market_feature_valid;
     wire market_feature_ready;
     wire [15:0] market_feature_symbol_id;
@@ -133,7 +142,37 @@ module trading_spi_top #(
     wire [`PACKET_BITS-1:0] system_response_packet;
     wire system_packet_error;
 
-    assign market_feature_ready = 1'b1;
+    wire strategy_enable;
+    wire long_enable;
+    wire short_enable;
+    wire signed [31:0] long_min_momentum_bps_x100;
+    wire signed [31:0] short_max_momentum_bps_x100;
+    wire signed [31:0] long_min_vwap_delta_bps_x100;
+    wire signed [31:0] short_max_vwap_delta_bps_x100;
+    wire signed [15:0] long_min_imbalance_q15;
+    wire signed [15:0] short_max_imbalance_q15;
+    wire signed [31:0] max_spread_bps_x100;
+    wire [TRADE_ACC_W-1:0] min_rolling_volume;
+    wire [31:0] signal_cooldown_events;
+    wire [NUM_SYMBOLS-1:0] symbol_enable;
+    wire config_slot_reset_valid;
+    wire [15:0] config_slot_reset_symbol_id;
+    wire config_slot_reset_ready;
+    wire market_slot_reset_ready;
+    wire signal_slot_reset_ready;
+
+    wire signal_feature_ready;
+    wire signal_valid;
+    wire signal_ready = 1'b1;
+    wire [15:0] signal_symbol_id;
+    wire [31:0] signal_sequence;
+    wire [1:0] signal_action;
+    wire [3:0] signal_score;
+    wire [15:0] signal_reason_bits;
+
+    assign config_slot_reset_ready = market_slot_reset_ready &&
+                                     signal_slot_reset_ready;
+    assign market_feature_ready = signal_feature_ready;
 
     // The feature bus is the handoff point for the next CSR/host result
     // stage. Keep it in the synthesized top even while the physical SPI
@@ -158,7 +197,9 @@ module trading_spi_top #(
         market_feature_midpoint_minus_vwap_bps_x100,
         market_feature_midpoint_minus_vwap_bps_x100_valid,
         market_history_trade_probe, market_history_midpoint_probe,
-        market_history_vwap_price_quantity_probe, market_history_vwap_quantity_probe
+        market_history_vwap_price_quantity_probe, market_history_vwap_quantity_probe,
+        signal_symbol_id, signal_sequence, signal_action, signal_score,
+        signal_reason_bits
     };
 
     spi_slave spi_slave_i (
@@ -206,6 +247,38 @@ module trading_spi_top #(
         .rd_underflow_count(tx_fifo_underflow_count)
     );
 
+    strategy_config #(
+        .NUM_SYMBOLS(NUM_SYMBOLS),
+        .TRADE_ACC_W(TRADE_ACC_W)
+    ) strategy_config_i (
+        .clk(clk),
+        .reset_n(reset_n_int),
+        .cfg_write_valid(dispatcher_control_valid),
+        .cfg_write_ready(dispatcher_control_ready),
+        .cfg_subcommand(dispatcher_control_subcommand),
+        .cfg_symbol_id(dispatcher_control_symbol_id),
+        .cfg_data64(dispatcher_control_data64),
+        .cfg_data32(dispatcher_control_data32),
+        .cfg_flags(dispatcher_control_flags),
+        .cfg_status(dispatcher_control_status),
+        .strategy_enable(strategy_enable),
+        .long_enable(long_enable),
+        .short_enable(short_enable),
+        .long_min_momentum_bps_x100(long_min_momentum_bps_x100),
+        .short_max_momentum_bps_x100(short_max_momentum_bps_x100),
+        .long_min_vwap_delta_bps_x100(long_min_vwap_delta_bps_x100),
+        .short_max_vwap_delta_bps_x100(short_max_vwap_delta_bps_x100),
+        .long_min_imbalance_q15(long_min_imbalance_q15),
+        .short_max_imbalance_q15(short_max_imbalance_q15),
+        .max_spread_bps_x100(max_spread_bps_x100),
+        .min_rolling_volume(min_rolling_volume),
+        .signal_cooldown_events(signal_cooldown_events),
+        .symbol_enable(symbol_enable),
+        .slot_reset_valid(config_slot_reset_valid),
+        .slot_reset_symbol_id(config_slot_reset_symbol_id),
+        .slot_reset_ready(config_slot_reset_ready)
+    );
+
     assign rx_packet_ready = !rx_fifo_wr_full;
     assign rx_fifo_wr_en = rx_packet_valid && rx_packet_ready;
     assign tx_packet_valid = !tx_fifo_rd_empty;
@@ -231,6 +304,14 @@ module trading_spi_top #(
         .event_side(dispatcher_event_side),
         .event_sequence(dispatcher_event_sequence),
         .event_flags(dispatcher_event_flags),
+        .control_valid(dispatcher_control_valid),
+        .control_ready(dispatcher_control_ready),
+        .control_subcommand(dispatcher_control_subcommand),
+        .control_symbol_id(dispatcher_control_symbol_id),
+        .control_data64(dispatcher_control_data64),
+        .control_data32(dispatcher_control_data32),
+        .control_flags(dispatcher_control_flags),
+        .control_status(dispatcher_control_status),
         .dispatch_error_pulse(dispatcher_error_pulse),
         .dispatch_error_reason(dispatcher_error_reason),
         .dispatch_error_symbol_id(dispatcher_error_symbol_id),
@@ -273,6 +354,9 @@ module trading_spi_top #(
         .event_side(dispatcher_event_side),
         .event_sequence(dispatcher_event_sequence),
         .event_flags(dispatcher_event_flags),
+        .slot_reset_valid(config_slot_reset_valid),
+        .slot_reset_symbol_id(config_slot_reset_symbol_id),
+        .slot_reset_ready(market_slot_reset_ready),
         .feature_valid(market_feature_valid),
         .feature_ready(market_feature_ready),
         .feature_symbol_id(market_feature_symbol_id),
@@ -314,6 +398,55 @@ module trading_spi_top #(
         .event_reject_reason(market_reject_reason),
         .event_reject_symbol_id(market_reject_symbol_id),
         .event_reject_sequence(market_reject_sequence)
+    );
+
+    signal_engine #(
+        .NUM_SYMBOLS(NUM_SYMBOLS),
+        .TRADE_ACC_W(TRADE_ACC_W)
+    ) signal_engine_i (
+        .clk(clk),
+        .reset_n(reset_n_int),
+        .feature_valid(market_feature_valid),
+        .feature_ready(signal_feature_ready),
+        .feature_symbol_id(market_feature_symbol_id),
+        .feature_sequence(market_feature_sequence),
+        .feature_spread_bps_x100(market_feature_spread_bps_x100),
+        .feature_spread_valid(market_feature_spread_bps_x100_valid),
+        .feature_momentum_bps_x100(market_feature_momentum_bps_x100),
+        .feature_momentum_valid(market_feature_momentum_bps_x100_valid),
+        .feature_imbalance_q15(market_feature_imbalance_normalized),
+        .feature_imbalance_valid(market_feature_imbalance_normalized_valid),
+        .feature_vwap(market_feature_vwap),
+        .feature_vwap_valid(market_feature_vwap_quotient_valid),
+        .feature_midpoint_minus_vwap(market_feature_midpoint_minus_vwap),
+        .feature_midpoint_minus_vwap_bps_x100(
+            market_feature_midpoint_minus_vwap_bps_x100),
+        .feature_vwap_delta_valid(
+            market_feature_midpoint_minus_vwap_bps_x100_valid),
+        .feature_rolling_volume(market_feature_rolling_volume),
+        .strategy_enable(strategy_enable),
+        .long_enable(long_enable),
+        .short_enable(short_enable),
+        .long_min_momentum_bps_x100(long_min_momentum_bps_x100),
+        .short_max_momentum_bps_x100(short_max_momentum_bps_x100),
+        .long_min_vwap_delta_bps_x100(long_min_vwap_delta_bps_x100),
+        .short_max_vwap_delta_bps_x100(short_max_vwap_delta_bps_x100),
+        .long_min_imbalance_q15(long_min_imbalance_q15),
+        .short_max_imbalance_q15(short_max_imbalance_q15),
+        .max_spread_bps_x100(max_spread_bps_x100),
+        .min_rolling_volume(min_rolling_volume),
+        .signal_cooldown_events(signal_cooldown_events),
+        .symbol_enable(symbol_enable),
+        .slot_reset_valid(config_slot_reset_valid),
+        .slot_reset_symbol_id(config_slot_reset_symbol_id),
+        .slot_reset_ready(signal_slot_reset_ready),
+        .signal_valid(signal_valid),
+        .signal_ready(signal_ready),
+        .signal_symbol_id(signal_symbol_id),
+        .signal_sequence(signal_sequence),
+        .signal_action(signal_action),
+        .signal_score(signal_score),
+        .signal_reason_bits(signal_reason_bits)
     );
 
     assign rx_fifo_rd_en = !rx_fifo_rd_empty && system_packet_ready;

@@ -48,11 +48,53 @@ record: type, symbol, timestamp, price, quantity, side, sequence, and flags.
 The market state engine returns a registered feature record with valid bits
 for quote-derived fields and momentum warm-up.
 
+## Runtime control packets
+
+`MSG_CONTROL` (`0x03`) reuses the fixed 32-byte request and the existing
+three-transfer turnaround/response sequence. Market quote/trade encoding is
+unchanged. For a control request, the fields are interpreted as follows:
+
+| Byte(s) | Control meaning |
+| --- | --- |
+| 2–3 | symbol ID for per-symbol commands |
+| 4–11 | opaque timestamp field; ignored by the current control bank |
+| 12–19 | `data64` |
+| 20–23 | `data32` |
+| 24 | subcommand |
+| 25–28 | opaque sequence field; ignored by the current control bank |
+| 29–30 | control flags; reserved in this milestone |
+
+The supported subcommands are:
+
+| Value | Command | Payload |
+| ---: | --- | --- |
+| `0x10` | set global flags | `data64[0]` strategy, `[1]` long, `[2]` short |
+| `0x11` | set long momentum floor | signed `data32` |
+| `0x12` | set short momentum ceiling | signed `data32` |
+| `0x13` | set long VWAP-delta floor | signed `data32` |
+| `0x14` | set short VWAP-delta ceiling | signed `data32` |
+| `0x15` | set long imbalance floor | signed `data32[15:0]` |
+| `0x16` | set short imbalance ceiling | signed `data32[15:0]` |
+| `0x17` | set maximum spread | signed `data32` |
+| `0x18` | set minimum rolling volume | low `TRADE_ACC_W` bits of `data64` |
+| `0x19` | set signal cooldown | unsigned `data32` |
+| `0x1A` | set symbol enable | `data64[0]`, selected symbol |
+| `0x1B` | clear symbol state | selected symbol; coordinates market and signal reset |
+| `0x1C` | get config | reserved; readback is not implemented yet |
+
+A CRC-valid accepted control request returns a `MSG_STATUS` response through
+the normal loopback/CRC path. Its status field is byte 24 and its response
+flags identify success or the error class. `STATUS_OK` (`0x01`) acknowledges a
+write, `STATUS_BAD_CONTROL` (`0xE8`) identifies an unsupported subcommand or
+out-of-range symbol, and `STATUS_CONFIG_BUSY` (`0xE9`) means a slot reset is
+still waiting for both state engines. A corrupted control packet still takes
+the normal `STATUS_BAD_CHECKSUM` path and is not applied.
+
 ## Status codes
 
 | Code | Meaning |
 | ---: | --- |
-| `0x01` | loopback accepted |
+| `0x01` | loopback or control accepted |
 | `0xE1` | invalid sync/version |
 | `0xE2` | CRC/checksum failure |
 | `0xE3` | unsupported message type |
@@ -60,6 +102,8 @@ for quote-derived fields and momentum warm-up.
 | `0xE5` | duplicate sequence number |
 | `0xE6` | stale/lower sequence number |
 | `0xE7` | market side is not 0 or 1 |
+| `0xE8` | unsupported control or control symbol |
+| `0xE9` | configuration/slot-reset path is busy |
 
 For a 32-byte malformed request, the FPGA copies the request's symbol, timestamp, data, quantity, and sequence fields into the response to simplify diagnostics. An incomplete CS-framed transfer is discarded by the per-frame reset and produces no packet; the next complete frame starts cleanly. No asynchronous incomplete-frame diagnostic is part of the production datapath.
 

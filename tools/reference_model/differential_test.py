@@ -15,13 +15,20 @@ if str(GENERATOR_DIR) not in sys.path:
 
 from generate_events import generate_events  # noqa: E402
 from market_model import MarketModel, ModelOutcome  # noqa: E402
+from strategy_model import (  # noqa: E402
+    SIGNAL_LONG_CANDIDATE,
+    SIGNAL_NONE,
+    SIGNAL_SHORT_CANDIDATE,
+    StrategyConfig,
+    StrategyModel,
+)
 
 
 def _signed(value: int, width: int) -> int:
     return value - (1 << width) if value & (1 << (width - 1)) else value
 
 
-def _expected_outcomes(events, model: MarketModel) -> list[tuple]:
+def _expected_outcomes(events, model: MarketModel, strategy: StrategyModel) -> list[tuple]:
     records: list[tuple] = []
     for event in events:
         outcome = model.process_packet(event.packet())
@@ -68,6 +75,17 @@ def _expected_outcomes(events, model: MarketModel) -> list[tuple]:
                     int(feature.midpoint_minus_vwap_valid),
                     feature.midpoint_minus_vwap_bps_x100,
                     int(feature.midpoint_minus_vwap_bps_x100_valid),
+                )
+            )
+            signal = strategy.evaluate(feature)
+            records.append(
+                (
+                    "SIGNAL",
+                    signal.symbol_id,
+                    signal.sequence,
+                    signal.action,
+                    signal.score,
+                    signal.reason_bits,
                 )
             )
     return records
@@ -127,6 +145,19 @@ def _parse_rtl(stdout: str) -> list[tuple]:
                     values[30],
                 )
             )
+        elif fields[0] == "SIGNAL":
+            if len(fields) != 6:
+                raise AssertionError(f"malformed signal record: {line}")
+            records.append(
+                (
+                    "SIGNAL",
+                    int(fields[1], 16),
+                    int(fields[2], 16),
+                    int(fields[3], 16),
+                    int(fields[4], 16),
+                    int(fields[5], 16),
+                )
+            )
     return records
 
 
@@ -144,6 +175,8 @@ def run(count: int = 1000, seed: int = 0x5EED, keep: bool = False) -> None:
         REPO_ROOT / "fpga" / "rtl" / "math" / "unsigned_divider.sv",
         REPO_ROOT / "fpga" / "rtl" / "math" / "feature_normalizer.sv",
         REPO_ROOT / "fpga" / "rtl" / "market" / "market_state_engine.sv",
+        REPO_ROOT / "fpga" / "rtl" / "strategy" / "strategy_config.sv",
+        REPO_ROOT / "fpga" / "rtl" / "strategy" / "signal_engine.sv",
         REPO_ROOT / "fpga" / "tb" / "tb_market_pipeline.sv",
     ]
     compile_command = [
@@ -166,7 +199,24 @@ def run(count: int = 1000, seed: int = 0x5EED, keep: bool = False) -> None:
         capture_output=True,
     )
 
-    expected = _expected_outcomes(events, MarketModel())
+    strategy_config = StrategyConfig(
+        strategy_enable=True,
+        long_enable=True,
+        short_enable=True,
+        long_min_momentum_bps_x100=0,
+        short_max_momentum_bps_x100=0,
+        long_min_vwap_delta_bps_x100=0,
+        short_max_vwap_delta_bps_x100=0,
+        long_min_imbalance_q15=0,
+        short_max_imbalance_q15=0,
+        max_spread_bps_x100=0x7FFFFFFF,
+        min_rolling_volume=0,
+        signal_cooldown_events=3,
+        symbol_enable=[True] * 4,
+    )
+    expected = _expected_outcomes(
+        events, MarketModel(), StrategyModel(num_symbols=4, config=strategy_config)
+    )
     actual = _parse_rtl(simulation.stdout)
     if actual != expected:
         limit = min(len(actual), len(expected))
@@ -181,9 +231,10 @@ def run(count: int = 1000, seed: int = 0x5EED, keep: bool = False) -> None:
     accepted = sum(record[0] == "FEATURE" for record in actual)
     rejected = sum(record[0] == "EVENT_REJECT" for record in actual)
     dispatcher_errors = sum(record[0] == "DISPATCH_ERROR" for record in actual)
+    signals = sum(record[0] == "SIGNAL" for record in actual)
     print(
         f"differential_test: PASS events={len(events)} outputs={len(actual)} "
-        f"accepted={accepted} rejected={rejected} "
+        f"accepted={accepted} signals={signals} rejected={rejected} "
         f"dispatcher_errors={dispatcher_errors} mismatches=0"
     )
     if not keep:

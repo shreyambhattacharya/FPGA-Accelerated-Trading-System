@@ -44,6 +44,12 @@ module market_state_engine #(
     input  wire [31:0]             event_sequence,
     input  wire [15:0]             event_flags,
 
+    // A slot reset is accepted only while the serialized engine is idle and
+    // its feature record is not being held.
+    input  wire                    slot_reset_valid,
+    input  wire [15:0]             slot_reset_symbol_id,
+    output wire                    slot_reset_ready,
+
     output wire                    feature_valid,
     input  wire                    feature_ready,
     output wire [15:0]             feature_symbol_id,
@@ -373,7 +379,9 @@ module market_state_engine #(
         .midpoint_minus_vwap_bps_x100_valid(normalizer_midpoint_minus_vwap_bps_x100_valid)
     );
 
-    assign event_ready = (state == IDLE) && !feature_valid_reg;
+    assign slot_reset_ready = (state == IDLE) && !feature_valid_reg;
+    assign event_ready = (state == IDLE) && !feature_valid_reg &&
+                         !slot_reset_valid;
     assign feature_valid = feature_valid_reg;
     assign feature_symbol_id = feature_symbol_id_reg;
     assign feature_sequence = feature_sequence_reg;
@@ -491,6 +499,16 @@ module market_state_engine #(
                 // words are ignored until their symbol is written again.
                 state_initialized[symbol_index] <= 1'b0;
             end
+        end else if (slot_reset_valid && slot_reset_ready &&
+                     (slot_reset_symbol_id < NUM_SYMBOLS)) begin
+            // Clearing the bitmap makes all packed state and history terms
+            // logically zero on the next event without requiring a wide
+            // multi-cycle memory clear.  The explicit word clear also makes
+            // simulation/debug probes immediately unambiguous.
+            state_initialized[slot_reset_symbol_id] <= 1'b0;
+            state_bank[slot_reset_symbol_id] <= {STATE_BANK_W{1'b0}};
+            state <= IDLE;
+            feature_valid_reg <= 1'b0;
         end else begin
             event_reject_pulse <= 1'b0;
 

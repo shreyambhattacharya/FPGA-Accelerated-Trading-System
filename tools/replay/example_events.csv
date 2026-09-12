@@ -1,0 +1,4 @@
+timestamp,event_type,symbol_id,price,quantity,side,sequence,flags
+1000,quote,0,100000000,100,0,1,0
+1001,quote,0,102000000,100,1,2,0
+1002,trade,0,101000000,10,0,3,0

@@ -3,21 +3,24 @@
 ## Scope of this milestone
 
 This stage keeps the reliable binary packet path and adds the first real
-market-data stage. The FPGA path is:
+market-data and candidate-signal stages. The FPGA path is:
 
 ```text
 SPI pins -> SPI mode-0 slave -> RX packet FIFO -> packet dispatcher
                                       |              |-> loopback validator -> TX packet FIFO
-                                      |              `-> normalized event -> market state/features
+                                       |              `-> normalized event -> market state/features -> candidate signal
+                                       |              `-> control -> strategy config / slot reset -> loopback ACK
                                       `------------------------------------> SPI mode-0 transmitter
 ```
 
 `packet_dispatcher.sv` validates sync and CRC with the shared sequential CRC
 engine, preserves the existing loopback/status path, and exposes a flat
 valid/ready event record for quote/trade traffic. `MSG_LOOPBACK` and malformed
-or unsupported packets remain diagnostic traffic. Valid quote/trade packets
-with an out-of-range symbol produce an explicit `STATUS_BAD_SYMBOL` error and
-do not enter market state.
+or unsupported packets remain diagnostic traffic. Valid `MSG_CONTROL` packets
+write the strategy configuration bank or request a coordinated symbol-slot
+reset, then use the existing loopback response as an ACK. Valid quote/trade
+packets with an out-of-range symbol produce an explicit `STATUS_BAD_SYMBOL`
+error and do not enter market state.
 
 The starter symbol table is numeric and parameterized: `0=SPY`, `1=QQQ`,
 `2=NVDA`, and `3=AMD`. `NUM_SYMBOLS` can be changed without changing the
@@ -103,21 +106,55 @@ fully warm quote with all five divide operations active. Exact latency varies
 with feature validity because skipped operations cost only scheduler cycles;
 the steady-state event rate is correspondingly data-dependent.
 
+## Candidate-signal stage
+
+`signal_engine.sv` consumes one registered normalized feature record at a time
+and emits one registered candidate record for every accepted feature. The
+record contains symbol ID, sequence, action (`SIGNAL_NONE`,
+`SIGNAL_LONG_CANDIDATE`, or `SIGNAL_SHORT_CANDIDATE`), a five-factor score, and
+diagnostic reason bits. It is a candidate notification only: it is not an
+order, position, risk approval, broker request, or live-trading action.
+
+The long and short predicates require valid momentum, midpoint-minus-VWAP bps,
+normalized imbalance, VWAP quotient, and spread inputs. They then apply the
+directional thresholds, maximum spread, rolling-volume minimum, strategy and
+side enables, per-symbol enable, and edge/cooldown state. Long has deterministic
+priority if thresholds overlap. See [`strategy.md`](strategy.md) for the exact
+comparison operators, reason-bit assignments, runtime command map, and replay
+format.
+
+The signal record uses a standard valid/ready boundary. The feature engine's
+`feature_ready` is driven by the signal engine, so a stalled downstream
+consumer holds the complete record and blocks the upstream event path without
+changing its fields. Per-symbol condition, last-emitted direction, and
+cooldown counters are independent. A coordinated `CLEAR_SYMBOL_STATE` command
+resets both market and signal state only when both stages are able to accept
+the reset.
+
+The direct latency measurement adds exactly one `clk27` cycle from a registered
+feature record to the registered signal record. With the default normalized
+path, the integrated latency bench measured 225 cycles for a warm quote, 537
+cycles for a fully warm trade, and 536 cycles for a fully warm quote with all
+five normalized divisions active. These are FPGA-clock simulation measurements;
+they exclude SPI wire time, CDC FIFO occupancy, dispatcher delay, host
+scheduling, and any future signal consumer.
+
 ## Timing-hardened packet validation
 
 The loopback stage validates and generates CRC-8/ATM values with the standalone `fpga/rtl/protocol/crc8_engine.sv`. It accepts one byte per `clk27` cycle and consumes the first 31 bytes of each 32-byte packet; the final byte is the transmitted CRC. The request and response CRC streams are separated by registered FSM states, so the old full-packet combinational CRC/response cone is no longer a single-cycle `clk27` path. The engine reports `done` after the final byte edge and holds the result until the next stream.
 
 At 27 MHz, each 31-byte CRC stream takes 31 system-clock cycles (about 1.15
 us). The normalized market engine now asserts a feature only after the shared
-divider schedule completes. With `feature_ready=1`, the latency testbench
-measured 224 `clk27` cycles for a warm two-sided quote, 536 cycles for a fully
-warm trade, and 535 cycles for a fully warm quote with all five divide
-operations active. Invalid operations take the early-exit path, so exact
-latency is data-dependent. Backpressure holds the registered feature and
-deasserts `event_ready`; these rates exclude SPI, FIFO, dispatcher, host, and
-future consumer costs. Market packets do not create a loopback response; the
-existing three-transfer request/turnaround/response framing remains available
-for diagnostics and future result packets.
+divider schedule completes. With the signal consumer ready, the latency
+testbench measured 224 `clk27` cycles for a warm two-sided quote, 536 cycles
+for a fully warm trade, and 535 cycles for a fully warm quote with all five
+divide operations active; the corresponding event-to-signal records were 225,
+537, and 536 cycles. Invalid operations take the early-exit path, so exact
+latency is data-dependent. Backpressure holds the registered feature/signal
+record and deasserts `event_ready`; these rates exclude SPI, FIFO, dispatcher,
+host, and future consumer costs. Market packets do not create a loopback
+response; the existing three-transfer request/turnaround/response framing
+remains available for diagnostics and future result packets.
 
 ## Pi responsibilities
 
@@ -128,9 +165,9 @@ The Raspberry Pi 5 is the SPI master. It will own Linux networking, TLS/WebSocke
 The FPGA is the deterministic data-plane accelerator. This stage updates
 per-symbol quote/trade state and calculates spread, midpoint, momentum,
 rolling volume, signed quote imbalance, VWAP numerator/denominator
-accumulators, VWAP quotient, and normalized bps/imbalance features. It
-deliberately emits no trading signal, strategy decision, risk approval, broker
-order, or live-trading action.
+accumulators, VWAP quotient, and normalized bps/imbalance features. It then
+emits candidate-only signal records with explainable reason bits. It does not
+emit a risk approval, broker order, or live-trading action.
 
 ## Market-state semantics
 

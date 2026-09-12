@@ -99,6 +99,8 @@ module loopback_engine (
             `STATUS_DUPLICATE_SEQ: flags_for_status = 16'h0020;
             `STATUS_STALE_SEQ:     flags_for_status = 16'h0040;
             `STATUS_BAD_SIDE:      flags_for_status = 16'h0080;
+            `STATUS_BAD_CONTROL:   flags_for_status = 16'h0100;
+            `STATUS_CONFIG_BUSY:   flags_for_status = 16'h0200;
             default:               flags_for_status = 16'h8000;
             endcase
         end
@@ -166,7 +168,9 @@ module loopback_engine (
                     status_reg <= `STATUS_OK;
                     response_flags_reg <= 16'h0001;
                 end
-                packet_error_pulse <= request_status_override_valid_reg || !request_valid;
+                packet_error_pulse <= request_status_override_valid_reg ?
+                                      (request_status_override_reg != `STATUS_OK) :
+                                      !request_valid;
                 state <= BUILD_RESPONSE;
             end
 

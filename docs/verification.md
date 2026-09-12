@@ -116,3 +116,17 @@ Physical Pi↔Tang validation has not been run because the hardware is not
 available in this development environment. Any hardware result must record
 the board, bitstream commit, tool version, SPI mode/rate, packet count,
 failures, wiring, and measurement setup.
+
+## Historical replay checks
+
+The historical replay path is verified separately with a deterministic
+hand-check fixture and Python unit tests covering canonical CSV/binary
+round-trips, provider parsing, quality diagnostics, session filters, latency
+and executable-side fills, costs/no-pyramiding, date splits, forward-return
+horizon selection, and end-to-end portfolio accounting. It reuses the same
+`MarketModel` and `StrategyModel`; it does not change FPGA behavior or claim
+physical hardware validation. Run it with:
+
+```powershell
+python -m unittest discover -s tools/backtest/tests -p "test_*.py" -v
+```

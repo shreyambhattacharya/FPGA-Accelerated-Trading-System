@@ -204,14 +204,19 @@ class MarketModel:
         self.bps_scale = bps_scale
         self.bps_output_scale = bps_output_scale
         self.imbalance_frac_bits = imbalance_frac_bits
+        self.reset_state()
+
+    def reset_state(self) -> None:
+        """Clear all per-symbol market state while retaining model dimensions."""
+
         self.symbols = [
             _SymbolState(
-                trade_history=[0] * trade_window,
-                midpoint_history=[0] * momentum_window,
-                vwap_price_quantity_history=[0] * vwap_window,
-                vwap_quantity_history=[0] * vwap_window,
+                trade_history=[0] * self.trade_window,
+                midpoint_history=[0] * self.momentum_window,
+                vwap_price_quantity_history=[0] * self.vwap_window,
+                vwap_quantity_history=[0] * self.vwap_window,
             )
-            for _ in range(num_symbols)
+            for _ in range(self.num_symbols)
         ]
 
     def process_event(self, event: MarketEvent) -> ModelOutcome:

@@ -88,6 +88,15 @@ class StrategyModel:
         self.cooldown_remaining = [0] * num_symbols
         self.metrics = StrategyMetrics()
 
+    def reset_state(self, *, reset_metrics: bool = False) -> None:
+        """Clear edge/cooldown state without changing runtime configuration."""
+
+        self.previous_condition = [SIGNAL_NONE] * self.num_symbols
+        self.last_emitted_action = [SIGNAL_NONE] * self.num_symbols
+        self.cooldown_remaining = [0] * self.num_symbols
+        if reset_metrics:
+            self.metrics = StrategyMetrics()
+
     def reset_symbol(self, symbol_id: int) -> None:
         self._check_symbol(symbol_id)
         self.previous_condition[symbol_id] = SIGNAL_NONE

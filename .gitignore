@@ -7,3 +7,4 @@ host/*.exe
 *.vvp
 *.vcd
 __pycache__/
+backtest_results/

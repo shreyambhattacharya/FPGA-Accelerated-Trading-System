@@ -4,7 +4,7 @@ This repository is the foundation for a paper-trading research and engineering p
 
 This is not institutional colocated HFT, a profitability claim, or a live-money trading system. The project is paper-trading-only by design. No live order path is implemented.
 
-## Current milestone: configurable candidate-signal engine
+## Current milestone: historical replay and paper backtesting
 
 The market-data milestone preserves the data-plane foundation and adds a
 parameterized quote/trade state engine followed by a runtime-configurable
@@ -20,6 +20,21 @@ Tang Nano SPI slave -> SPI-domain RX FIFO -> 27 MHz packet dispatcher
                                        `-> CONTROL -> config/slot reset -> loopback ACK
   <- turnaround/response transfers remain available for diagnostic packets
 ```
+
+Historical Level-1 quote/trade data follows the same normalized event and
+reference-model path offline:
+
+```text
+dataset -> canonical NormalizedEvent -> MarketModel -> StrategyModel
+        -> candidate telemetry -> quote-aware paper execution -> portfolio/report
+```
+
+This milestone adds deterministic session filtering, data-quality reporting,
+Alpaca parser/download scaffolding (credentials only through environment
+variables), latency/slippage/commission-aware hypothetical fills, portfolio
+accounting, forward returns, research baselines/sweeps, and reproducible
+JSON/Markdown/CSV outputs. It does not include real downloaded data, broker
+orders, or live trading.
 
 The packet format is fixed at 32 bytes, uses big-endian integer fields, and ends with CRC-8/ATM. The RTL is written in synthesizable SystemVerilog. The packet FIFOs are Gray-pointer asynchronous FIFOs with two-flop pointer synchronizers; SPI framing remains in the external SPI clock domain while validation, market-state updates, and diagnostic response generation run on the Tang Nano's onboard 27 MHz clock. The market engine uses integer micro-dollar prices, per-symbol sequence checks, quote/trade isolation, spread, midpoint, momentum, rolling volume, imbalance, and VWAP accumulators. Its market path is a serialized, registered read/modify/write pipeline with one shared 64x32 multiplier and one shared sequential 101/64 divider; it does not replicate feature engines per symbol. It emits the actual VWAP quotient, Q1.15 imbalance, spread/momentum/midpoint-VWAP basis-point fields scaled by 100, and explicit validity flags. Per-symbol state is held in a packed state bank with logical reset tracking, while the rolling histories remain independent. The candidate-signal engine consumes those normalized fields, applies runtime thresholds and enables, emits a diagnostic `SIGNAL_NONE` or candidate record for every accepted feature, and never places an order. The host side is modern C++17 and uses Linux `spidev` when built and run on Raspberry Pi OS. A deterministic software transport, Python reference/differential model, and offline replay harness are included so protocol, market, and signal semantics can be exercised on a development PC without pretending that physical SPI was tested.
 
@@ -44,6 +59,8 @@ host/src/                     Linux SPI and software-loopback implementations
 host/tests/                   C++ loopback/stress utility
 tools/reference_model/       Independent protocol and market reference models
 tools/replay/                 Offline normalized-event to candidate-signal replay harness
+tools/backtest/               Canonical data, replay, paper fills, metrics, reports, tests
+configs/backtest/              Explicit reproducible backtest configurations
 tools/market_data_generator/ Deterministic synthetic quote/trade event stream
 ```
 
@@ -66,6 +83,24 @@ g++ -std=c++17 -Wall -Wextra -Wpedantic -O2 -I host/include `
   -o host/loopback_test.exe
 .\host\loopback_test.exe --sim --count 1000
 ```
+
+## Run the historical paper backtest
+
+The backtest accepts canonical Level-1 quote/trade CSV or the exact 32-byte
+packet binary stream. It performs no network access by default:
+
+```powershell
+python -m tools.backtest.run_backtest `
+  --data tools/backtest/fixtures/hand_check.csv `
+  --config configs/backtest/base.json `
+  --output build/backtest_run
+python -m unittest discover -s tools/backtest/tests -p "test_*.py" -v
+```
+
+See [`docs/data_pipeline.md`](docs/data_pipeline.md) for the canonical schema
+and [`docs/backtesting.md`](docs/backtesting.md) for execution assumptions,
+metrics, splits, research baselines, and result files. The hand-check fixture
+is intentionally too small for statistical conclusions.
 
 For physical Pi use, follow [`docs/hardware_bringup.md`](docs/hardware_bringup.md), then run the same program with `--device /dev/spidev0.0`. The program prints `mode=REAL_HARDWARE` only on the spidev path; `--sim` is explicitly labeled `mode=SIMULATION`. Its throughput is an end-to-end exchange rate over the measured run, not a claim about FPGA service time.
 
@@ -96,11 +131,11 @@ The exact wiring, power precautions, Gowin IDE flow, and Raspberry Pi commands a
 1. Pi ↔ FPGA SPI foundation — complete
 2. Normalized quote/trade protocol and dispatcher — complete
 3. Parameterized market-state engine and normalized fixed-point feature layer — complete
-4. Configurable candidate-signal engine and runtime control packets — current milestone
-5. C++ real-time market-data receiver
-6. Full Pi → FPGA event/feature/signal path
-7. Hardware risk checks
-8. Historical replay and strategy evaluation
+4. Configurable candidate-signal engine and runtime control packets — complete
+5. Historical replay and strategy evaluation — current milestone
+6. C++ real-time market-data receiver
+7. Full Pi → FPGA event/feature/signal path
+8. Hardware risk checks
 9. Paper broker integration
 10. Latency, throughput, and robustness benchmarking
 

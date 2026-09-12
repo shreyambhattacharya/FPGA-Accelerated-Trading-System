@@ -1,0 +1,54 @@
+{
+  "num_symbols": 1,
+  "model": {
+    "trade_window": 32,
+    "momentum_window": 16,
+    "vwap_window": 32
+  },
+  "session": {
+    "timezone": "America/New_York",
+    "regular_start": "09:30",
+    "regular_end": "16:00",
+    "extended_hours": false,
+    "reset_each_session": true,
+    "reset_replay_sequences": true
+  },
+  "execution": {
+    "latency_ms": 1,
+    "fixed_slippage_micro": 0,
+    "slippage_bps": 0.0,
+    "commission_per_trade": 0.0,
+    "commission_per_share": 0.0,
+    "minimum_commission": 0.0
+  },
+  "portfolio": {
+    "starting_cash": 100000.0,
+    "sizing_mode": "fixed_notional",
+    "fixed_notional": 10000.0,
+    "enable_short": false,
+    "no_pyramiding": true,
+    "reverse_same_event": false,
+    "opposite_candidate_exit": true,
+    "stop_loss_bps": 25.0,
+    "take_profit_bps": 50.0,
+    "max_holding_ns": 300000000000,
+    "end_of_day_flatten": true
+  },
+  "strategy": {
+    "strategy_enable": true,
+    "long_enable": true,
+    "short_enable": false,
+    "long_min_momentum_bps_x100": 100,
+    "short_max_momentum_bps_x100": -100,
+    "long_min_vwap_delta_bps_x100": 100,
+    "short_max_vwap_delta_bps_x100": -100,
+    "long_min_imbalance_q15": 1638,
+    "short_max_imbalance_q15": -1638,
+    "max_spread_bps_x100": 500,
+    "min_rolling_volume": 1,
+    "signal_cooldown_events": 4,
+    "symbol_enable": [true]
+  },
+  "strict_quality": false,
+  "seed": 7
+}

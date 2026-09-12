@@ -129,4 +129,11 @@ The divider schedule is data-dependent. The dedicated latency testbench
 measured 224 cycles for a warm two-sided quote, 536 cycles for a fully warm
 trade, and 535 cycles for a fully warm quote with all five divide operations
 active. The result is a feature-service measurement, not an SPI wire or host
-round-trip measurement.
+round-trip measurement. For the fully warm/all-five-operation path, the
+serialized `event_ready` interval is therefore 535 cycles for quotes and 536
+cycles for trades: approximately 50,467 quotes/s and 50,373 trades/s at
+27 MHz. The five active unsigned-divider operations account for 5 x 101
+bit-iteration clocks; the remaining cycles cover registered state/history
+access, raw feature calculation, scale/scheduler control, state/history commit,
+and registered feature output. Early-exit records, such as the 224-cycle warm
+quote, skip invalid divisions and are correspondingly shorter.

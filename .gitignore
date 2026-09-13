@@ -12,5 +12,6 @@ backtest_results/
 data/raw/
 data/normalized/
 data/manifests/
+data/research/
 
 .env.local

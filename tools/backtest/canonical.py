@@ -222,6 +222,37 @@ def iter_binary_events(path: Path, *, validate_crc: bool = True, start_index: in
                 source.seek((step - 1) * PACKET_BYTES, 1)
 
 
+def iter_binary_field_tuples(path: Path, *, start_index: int = 0, step: int = 1, chunk_packets: int = 65_536):
+    """Yield packet fields through a large buffered ``struct.iter_unpack`` loop.
+
+    This is the no-CRC, extraction hot path.  It avoids constructing a
+    ``NormalizedEvent`` for packets that fall outside the requested research
+    windows; callers create the dataclass only for selected records.
+    """
+
+    if start_index < 0:
+        raise ValueError("start_index must be non-negative")
+    if step < 1:
+        raise ValueError("step must be positive")
+    if chunk_packets < 1:
+        raise ValueError("chunk_packets must be positive")
+    fields = struct.Struct(">BBHQQIBIHx")
+    chunk_bytes = chunk_packets * PACKET_BYTES
+    with path.open("rb", buffering=chunk_bytes) as source:
+        source.seek(start_index * PACKET_BYTES)
+        index = start_index
+        while True:
+            payload = source.read(chunk_bytes)
+            if not payload:
+                return
+            if len(payload) % PACKET_BYTES:
+                raise CanonicalFormatError(f"{path} length is not a multiple of {PACKET_BYTES}")
+            for offset, values in enumerate(struct.iter_unpack(fields.format, payload)):
+                if offset % step == 0:
+                    yield index + offset, values
+            index += len(payload) // PACKET_BYTES
+
+
 def _decode_packet_fields(packet: bytes) -> tuple[int, int, int, int, int, int, int, int]:
     sync, message_type, symbol, timestamp, price, quantity, side, sequence, flags = struct.unpack(
         ">BBHQQIBIH", packet[:31]

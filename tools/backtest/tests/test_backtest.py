@@ -12,6 +12,7 @@ from tools.backtest.canonical import (
     MSG_MARKET_QUOTE,
     MSG_MARKET_TRADE,
     NormalizedEvent,
+    iter_binary_field_tuples,
     read_binary_events,
     read_csv_events,
     sort_events,
@@ -28,9 +29,73 @@ from tools.backtest.providers import AlpacaDownloadError, AlpacaHistoricalAdapte
 from tools.backtest.session import SessionConfig
 from tools.backtest.splits import chronological_split, walk_forward_windows
 from tools.backtest.types import CandidateSignal, OrderRequest
+from tools.backtest.research_cache import CACHE_RECORD_SIZE, CacheRecord, ResearchWindow, build_research_caches, iter_cache_records, pack_cache_record, sha256_file
+from tools.backtest.strategy_v2 import CausalTimeFeatureEngine, TimeFeature, V2Config, V2Strategy, bps_x100
 
 
 class BacktestTests(unittest.TestCase):
+    def test_strategy_v2_cache_record_round_trip_and_fixed_width(self):
+        record = CacheRecord(1, MSG_MARKET_QUOTE, 0, True, 2, 0, 1, 100_000_000, 25, 7, 99_000_000, 101_000_000, 10, 11, 100_000_000, 2_000_000, 100_000_000, 100, 125, -25, 4096, 20, 0x3FF)
+        payload = pack_cache_record(record)
+        self.assertEqual(len(payload), CACHE_RECORD_SIZE)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cache.bin"
+            path.write_bytes(payload)
+            self.assertEqual(list(iter_cache_records(path)), [record])
+
+    def test_strategy_v2_time_features_are_causal_and_units_are_integer(self):
+        engine = CausalTimeFeatureEngine(1)
+        first = CacheRecord(0, MSG_MARKET_QUOTE, 0, True, 0, 0, 0, 100_000_000, 10, 1, 99_000_000, 101_000_000, 10, 10, 100_000_000, 2_000_000, 0, 1, 0, 0, 0, 200, 0x1FF)
+        second = CacheRecord(2_000_000_000, MSG_MARKET_QUOTE, 0, True, 0, 0, 0, 100_250_000, 10, 2, 99_250_000, 101_250_000, 10, 10, 100_250_000, 2_000_000, 0, 1, 0, 0, 0, 199, 0x1FF)
+        self.assertIsNone(engine.process(first).momentum_bps_x100[1_000_000_000])
+        self.assertEqual(engine.process(second).momentum_bps_x100[1_000_000_000], bps_x100(250_000, 100_000_000))
+        self.assertEqual(bps_x100(250_000, 100_000_000), 2500)
+
+    def test_strategy_v2_persistence_and_wall_clock_cooldown(self):
+        cfg = V2Config("fixture", "V2-D", momentum_horizon_ns=1, momentum_threshold_bps_x100=1, vwap_horizon_ns=1, vwap_threshold_bps_x100=1, imbalance_threshold_q15=1, max_spread_bps_x100=10, min_rolling_volume=1, cooldown_ns=10, persistence_ns=5)
+        strategy = V2Strategy(cfg, 1)
+        def feature(timestamp):
+            record = CacheRecord(timestamp, MSG_MARKET_QUOTE, 0, True, 0, 0, 0, 100, 1, 1, 99, 101, 1, 1, 100, 2, 100, 1, 1, 1, 1, 1, 0x1FF)
+            return TimeFeature(record, {1: 2}, {1: 2}, {1: 100})
+        self.assertEqual(strategy.evaluate(feature(0)).action, 0)
+        self.assertEqual(strategy.evaluate(feature(5)).action, 1)
+        self.assertEqual(strategy.evaluate(feature(6)).action, 0)
+
+    def test_strategy_v2_cache_preserves_contiguous_warmup_boundaries_and_hashes(self):
+        events = [
+            NormalizedEvent(0, MSG_MARKET_QUOTE, 0, 100_000_000, 10, 0, 1, source_index=0),
+            NormalizedEvent(1, MSG_MARKET_TRADE, 0, 100_000_000, 1, 0, 1, source_index=1),
+            NormalizedEvent(2, MSG_MARKET_QUOTE, 0, 100_100_000, 10, 0, 2, source_index=2),
+            NormalizedEvent(4, MSG_MARKET_TRADE, 0, 100_100_000, 1, 0, 2, source_index=3),
+            NormalizedEvent(5, MSG_MARKET_QUOTE, 0, 100_200_000, 10, 0, 3, source_index=4),
+            NormalizedEvent(6, MSG_MARKET_TRADE, 0, 100_200_000, 1, 0, 3, source_index=5),
+            NormalizedEvent(7, MSG_MARKET_QUOTE, 0, 100_300_000, 10, 0, 4, source_index=6),
+            NormalizedEvent(9, MSG_MARKET_TRADE, 0, 100_300_000, 1, 0, 4, source_index=7),
+        ]
+        windows = (
+            ResearchWindow("w0", "fixture", "00:00", "00:00:02", "00:00:05", 0, 2, 5),
+            ResearchWindow("w1", "fixture", "00:00:05", "00:00:07", "00:00:10", 5, 7, 10),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            canonical = root / "canonical.bin"
+            write_binary_events(canonical, events)
+            identity = {"sha256": sha256_file(canonical), "event_count": len(events)}
+            cache = root / "research.bin"
+            spec = {"fixture": (cache, windows)}
+            first = build_research_caches(canonical, identity, spec)
+            manifest = first["fixture"]
+            records = list(iter_cache_records(cache))
+            self.assertEqual([record.timestamp_ns for record in records], [event.timestamp_ns for event in events])
+            self.assertEqual(manifest["record_count"], 8)
+            self.assertEqual(manifest["warmup_record_count"], 4)
+            self.assertEqual(manifest["measured_record_count"], 4)
+            self.assertEqual(manifest["cache_sha256"], sha256_file(cache))
+            self.assertTrue(all(records[index].measured == (index % 4 in (2, 3)) for index in range(8)))
+            self.assertTrue(first["fixture"]["cache_reused"] is False)
+            second = build_research_caches(canonical, identity, spec)
+            self.assertTrue(second["fixture"]["cache_reused"])
+
     def test_canonical_csv_binary_round_trip(self):
         events = [NormalizedEvent(10, MSG_MARKET_QUOTE, 0, 100, 2, 0, 1)]
         with tempfile.TemporaryDirectory() as directory:
@@ -42,6 +107,20 @@ class BacktestTests(unittest.TestCase):
             self.assertEqual(parsed_csv.__dict__ | {"source": "", "source_index": 0}, events[0].__dict__)
             parsed_binary = read_binary_events(binary_path)[0]
             self.assertEqual(parsed_binary.__dict__ | {"source": "", "source_index": 0}, events[0].__dict__)
+
+    def test_buffered_canonical_field_reader_matches_packet_fields(self):
+        events = [
+            NormalizedEvent(10, MSG_MARKET_QUOTE, 2, 100_000_000, 7, 1, 9, flags=3),
+            NormalizedEvent(20, MSG_MARKET_TRADE, 1, 100_100_000, 5, 0, 8, flags=4),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.bin"
+            write_binary_events(path, events)
+            fields = list(iter_binary_field_tuples(path, chunk_packets=1))
+            self.assertEqual(fields[0][0], 0)
+            self.assertEqual(fields[0][1][3:9], (10, 100_000_000, 7, 1, 9, 3))
+            self.assertEqual(fields[1][0], 1)
+            self.assertEqual(fields[1][1][1], MSG_MARKET_TRADE)
 
     def test_quality_reports_without_discarding_crosses(self):
         events = [

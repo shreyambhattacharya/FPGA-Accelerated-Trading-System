@@ -30,10 +30,12 @@ def write_run(output_dir: Path, run, *, metadata: dict[str, Any] | None = None, 
     _write_json(output_dir / "summary.json", run.summary)
     _write_json(output_dir / "quality.json", run.quality.to_dict())
     _write_json(output_dir / "forward_summary.json", run.forward_summary)
-    _write_csv(output_dir / "trades.csv", [
-        {key: value for key, value in asdict(trade).items() if key != "entry_feature"}
-        for trade in run.trades
-    ])
+    trade_rows = []
+    for trade in run.trades:
+        row = asdict(trade)
+        row["entry_feature"] = json.dumps(_json_safe(row["entry_feature"]), sort_keys=True) if row["entry_feature"] is not None else ""
+        trade_rows.append(row)
+    _write_csv(output_dir / "trades.csv", trade_rows)
     _write_csv(output_dir / "candidates.csv", [asdict(row) for row in run.candidate_logs])
     _write_csv(output_dir / "equity_curve.csv", [asdict(row) for row in run.equity_curve])
     _write_csv(output_dir / "drawdown.csv", equity_drawdown(run.equity_curve))

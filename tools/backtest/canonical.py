@@ -74,6 +74,12 @@ class NormalizedEvent:
     source_index: int = 0
     source: str = ""
 
+    @property
+    def message_type(self) -> int:
+        """Compatibility alias for the reference model's packet field."""
+
+        return self.event_type
+
     def to_market_event(self, sequence: int | None = None) -> MarketEvent:
         resolved = self.sequence if sequence is None else sequence
         if resolved is None:
@@ -163,33 +169,57 @@ def read_csv_events(path: Path) -> list[NormalizedEvent]:
     return events
 
 
-def read_binary_events(path: Path) -> list[NormalizedEvent]:
+def read_binary_events(path: Path, *, validate_crc: bool = True) -> list[NormalizedEvent]:
     """Read concatenated exact 32-byte FPGA packets and validate their CRC."""
 
-    data = path.read_bytes()
-    if len(data) % PACKET_BYTES:
-        raise CanonicalFormatError(f"{path} length is not a multiple of {PACKET_BYTES}")
-    events: list[NormalizedEvent] = []
-    for index in range(0, len(data), PACKET_BYTES):
-        packet = data[index : index + PACKET_BYTES]
-        if packet[0] != SYNC_VERSION or packet[-1] != crc8(packet[:-1]):
-            raise CanonicalFormatError(f"invalid sync/CRC in binary record {index // PACKET_BYTES}")
-        event = MarketEvent(*_decode_packet_fields(packet))
-        events.append(
-            NormalizedEvent(
-                timestamp_ns=event.timestamp_ns,
-                event_type=event.message_type,
-                symbol_id=event.symbol_id,
-                price=event.price,
-                quantity=event.quantity,
-                side=event.side,
-                sequence=event.sequence,
-                flags=event.flags,
-                source_index=index // PACKET_BYTES,
-                source=str(path),
+    return list(iter_binary_events(path, validate_crc=validate_crc))
+
+
+def iter_binary_events(path: Path, *, validate_crc: bool = True, start_index: int = 0, step: int = 1) -> Iterator[NormalizedEvent]:
+    """Stream exact 32-byte FPGA packets, optionally validating each CRC.
+
+    CRC validation is enabled by default for ingestion and quality checks. A
+    normalized file is already written from CRC-protected packets, so large
+    replay passes may disable the per-record CRC loop after one validation
+    scan; this keeps the replay semantics identical while avoiding redundant
+    packet-integrity work on every experiment variant. ``step`` selects
+    deterministic packet positions without decoding skipped packets, making
+    bounded exploratory probes sparse reads rather than hidden full decoding
+    passes.
+    """
+
+    if start_index < 0:
+        raise ValueError("start_index must be non-negative")
+    if step < 1:
+        raise ValueError("step must be positive")
+    with path.open("rb") as source:
+        source.seek(start_index * PACKET_BYTES)
+        index = start_index
+        source_label = str(path)
+        while True:
+            packet = source.read(PACKET_BYTES)
+            if not packet:
+                return
+            if len(packet) != PACKET_BYTES:
+                raise CanonicalFormatError(f"{path} length is not a multiple of {PACKET_BYTES}")
+            if validate_crc and (packet[0] != SYNC_VERSION or packet[-1] != crc8(packet[:-1])):
+                raise CanonicalFormatError(f"invalid sync/CRC in binary record {index}")
+            message_type, symbol_id, timestamp_ns, price, quantity, side, sequence, flags = _decode_packet_fields(packet)
+            yield NormalizedEvent(
+                timestamp_ns=timestamp_ns,
+                event_type=message_type,
+                symbol_id=symbol_id,
+                price=price,
+                quantity=quantity,
+                side=side,
+                sequence=sequence,
+                flags=flags,
+                source_index=index,
+                source=source_label,
             )
-        )
-    return events
+            index += step
+            if step > 1:
+                source.seek((step - 1) * PACKET_BYTES, 1)
 
 
 def _decode_packet_fields(packet: bytes) -> tuple[int, int, int, int, int, int, int, int]:
@@ -238,9 +268,9 @@ def write_binary_events(path: Path, events: Iterable[NormalizedEvent]) -> None:
 
 
 def sort_events(events: Sequence[NormalizedEvent]) -> list[NormalizedEvent]:
-    """Globally time-order events; source order breaks equal timestamps."""
+    """Globally time-order events with deterministic symbol/source/side ties."""
 
-    return sorted(events, key=lambda event: (event.timestamp_ns, event.source_index))
+    return sorted(events, key=lambda event: (event.timestamp_ns, event.symbol_id, event.source_index, event.event_type, event.side))
 
 
 def assign_replay_sequences(

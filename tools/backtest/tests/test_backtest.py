@@ -6,9 +6,11 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from urllib.error import HTTPError
 
 from tools.backtest.canonical import (
     MSG_MARKET_QUOTE,
+    MSG_MARKET_TRADE,
     NormalizedEvent,
     read_binary_events,
     read_csv_events,
@@ -19,9 +21,10 @@ from tools.backtest.canonical import (
 from tools.backtest.data_quality import DataQualityValidator
 from tools.backtest.execution_simulator import ExecutionConfig, ExecutionSimulator
 from tools.backtest.forward_returns import ForwardReturnAnalyzer, QuotePoint
+from tools.backtest.arrival import combined_timestamp_analysis, event_rate_analysis, interarrival_analysis, percentile, simulate_serialized_capacity
 from tools.backtest.pipeline import BacktestConfig, BacktestEngine
 from tools.backtest.portfolio_simulator import PortfolioConfig, PortfolioSimulator
-from tools.backtest.providers import AlpacaHistoricalAdapter, timestamp_to_ns
+from tools.backtest.providers import AlpacaDownloadError, AlpacaHistoricalAdapter, AlpacaHistoricalDownloader, timestamp_to_ns
 from tools.backtest.session import SessionConfig
 from tools.backtest.splits import chronological_split, walk_forward_windows
 from tools.backtest.types import CandidateSignal, OrderRequest
@@ -57,15 +60,116 @@ class BacktestTests(unittest.TestCase):
         events = AlpacaHistoricalAdapter().parse(payload, 0)
         self.assertEqual([event.side for event in events], [0, 1])
         self.assertEqual(events[0].price, 100_000_000)
+        self.assertEqual(events[0].quantity, 1000)
+        trades = AlpacaHistoricalAdapter().parse({"trades": [{"t": "2024-01-02T14:30:00.000000Z", "p": "100.00", "s": 7}]}, 0)
+        self.assertEqual(trades[0].quantity, 7)
         self.assertEqual(timestamp_to_ns("1970-01-01T00:00:00Z"), 0)
+        self.assertEqual(timestamp_to_ns("2024-01-02T14:30:00.123456789Z"), 1704205800123456789)
+
+    def test_alpaca_pagination_and_repeated_token_detection(self):
+        responses = [
+            _FakeResponse({"quotes": [{"t": "2024-01-02T14:30:00Z"}, {"t": "2024-01-02T14:30:01Z"}], "next_page_token": "page-1"}),
+            _FakeResponse({"quotes": [{"t": "2024-01-02T14:30:02Z"}]})
+        ]
+        downloader = AlpacaHistoricalDownloader(feed="iex", api_key="unit-key", api_secret="unit-secret", page_limit=2, opener=lambda request, timeout: responses.pop(0), sleep_fn=lambda _: None)
+        records, summary = downloader.fetch_pages(symbol="SPY", kind="quotes", start="2024-01-02T14:30:00Z", end="2024-01-02T20:00:00Z")
+        self.assertEqual(len(records), 3)
+        self.assertEqual(summary.pages_completed, 2)
+        self.assertEqual(summary.status_summary, {"200": 2})
+
+        repeated = [_FakeResponse({"quotes": [{"t": "2024-01-02T14:30:00Z"}], "next_page_token": "same"}), _FakeResponse({"quotes": [{"t": "2024-01-02T14:30:01Z"}], "next_page_token": "same"})]
+        downloader = AlpacaHistoricalDownloader(api_key="unit-key", api_secret="unit-secret", opener=lambda request, timeout: repeated.pop(0), sleep_fn=lambda _: None)
+        with self.assertRaises(AlpacaDownloadError):
+            downloader.fetch_pages(symbol="SPY", kind="quotes", start="a", end="b")
+
+    def test_alpaca_retry_and_permanent_http_errors_are_bounded(self):
+        transient = [HTTPError("https://example.invalid", 429, "rate", {}, None), _FakeResponse({"trades": []})]
+        downloader = AlpacaHistoricalDownloader(api_key="unit-key", api_secret="unit-secret", opener=lambda request, timeout: (_raise(transient.pop(0)) if isinstance(transient[0], HTTPError) else transient.pop(0)), sleep_fn=lambda _: None)
+        records, summary = downloader.fetch_pages(symbol="SPY", kind="trades", start="a", end="b")
+        self.assertEqual(records, [])
+        self.assertEqual(summary.retry_count, 1)
+        permanent = AlpacaHistoricalDownloader(api_key="unit-key", api_secret="unit-secret", opener=lambda request, timeout: _raise(HTTPError("https://example.invalid", 401, "auth", {}, None)), sleep_fn=lambda _: None)
+        with self.assertRaisesRegex(AlpacaDownloadError, "status 401"):
+            permanent.fetch_pages(symbol="SPY", kind="trades", start="a", end="b")
+
+    def test_atomic_download_does_not_leave_partial_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "quotes.json"
+            downloader = AlpacaHistoricalDownloader(api_key="unit-key", api_secret="unit-secret", opener=lambda request, timeout: _raise(OSError("network")), max_retries=0, sleep_fn=lambda _: None)
+            with self.assertRaises(AlpacaDownloadError):
+                downloader.download_to(output, symbol="SPY", kind="quotes", start="a", end="b")
+            self.assertFalse(output.exists())
+            self.assertFalse((Path(directory) / "quotes.json.part").exists())
 
     def test_session_regular_and_extended_hours(self):
         config = SessionConfig()
         regular = _timestamp("2024-01-02T14:30:00Z")
         premarket = _timestamp("2024-01-02T13:00:00Z")
+        labor_day = _timestamp("2026-09-07T14:30:00Z")
         self.assertTrue(config.in_session(regular))
         self.assertFalse(config.in_session(premarket))
+        self.assertFalse(config.in_session(labor_day))
         self.assertTrue(replace(config, extended_hours=True).in_session(premarket))
+
+    def test_event_rates_interarrival_capacity_and_percentiles(self):
+        events = [
+            NormalizedEvent(0, MSG_MARKET_QUOTE, 0, 100, 1, 0, 1, source_index=0),
+            NormalizedEvent(1_000_000, MSG_MARKET_QUOTE, 1, 100, 1, 0, 1, source_index=0),
+            NormalizedEvent(2_000_000, MSG_MARKET_QUOTE, 0, 100, 1, 1, 2, source_index=1),
+            NormalizedEvent(2_000_000, MSG_MARKET_TRADE, 1, 100, 1, 0, 2, source_index=1),
+        ]
+        rates = event_rate_analysis(events)
+        self.assertEqual(rates["1ms"]["combined"]["maximum_events_per_second"], 2000.0)
+        arrival = interarrival_analysis(events, service_cycles=1, clock_hz=1_000)
+        self.assertEqual(arrival["groups"]["combined"]["min"], 0)
+        self.assertEqual(arrival["groups"]["combined"]["fraction_within_service_interval"], 1.0)
+        capacity = simulate_serialized_capacity(events, service_cycles=1, clock_hz=1_000, depths=(1,))
+        self.assertEqual(capacity["finite_depths"]["1"]["overflow_events"], 1)
+        self.assertEqual(percentile([1, 2, 3, 4], .75), 3)
+
+    def test_combined_timestamp_analysis_resumes_from_checkpoint(self):
+        events = [
+            NormalizedEvent(0, MSG_MARKET_QUOTE, 0, 100, 1, 0, 1),
+            NormalizedEvent(1_000_000, MSG_MARKET_QUOTE, 0, 100, 1, 1, 2),
+            NormalizedEvent(2_000_000, MSG_MARKET_TRADE, 1, 100, 1, 0, 1),
+            NormalizedEvent(3_000_000, MSG_MARKET_QUOTE, 1, 100, 1, 1, 2),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = root / "diagnostics.pkl"
+            state = root / "analysis_state.json"
+            identity = {"dataset_id": "fixture", "sha256": "fixture", "size_bytes": 128, "event_count": len(events)}
+
+            def interrupted_factory(start):
+                for index in range(start, len(events)):
+                    if start == 0 and index == 3:
+                        raise RuntimeError("intentional interruption")
+                    yield events[index]
+
+            with self.assertRaisesRegex(RuntimeError, "intentional interruption"):
+                combined_timestamp_analysis(
+                    interrupted_factory,
+                    total_events=len(events),
+                    checkpoint_path=checkpoint,
+                    state_manifest_path=state,
+                    input_identity=identity,
+                    checkpoint_event_interval=2,
+                )
+            self.assertTrue(checkpoint.exists())
+            self.assertEqual(json.loads(state.read_text())["processed_events"], 3)
+
+            result = combined_timestamp_analysis(
+                lambda start: iter(events[start:]),
+                total_events=len(events),
+                checkpoint_path=checkpoint,
+                state_manifest_path=state,
+                input_identity=identity,
+                checkpoint_event_interval=2,
+            )
+            self.assertEqual(result["processed_events"], len(events))
+            self.assertEqual(result["aggregate"]["total_events"], len(events))
+            self.assertEqual(result["by_symbol"]["0"]["total_events"], 2)
+            self.assertEqual(json.loads(state.read_text())["phase"], "combined_timestamp_analysis_complete")
 
     def test_execution_uses_executable_quote_side_and_latency(self):
         feature = type("Feature", (), {"symbol_id": 0, "bid_price": 100, "ask_price": 102, "bid_quantity": 10, "ask_quantity": 10})()
@@ -135,6 +239,24 @@ class BacktestTests(unittest.TestCase):
 
 def _timestamp(value):
     return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1_000_000_000)
+
+
+class _FakeResponse:
+    status = 200
+    def __init__(self, payload):
+        self.payload = json.dumps(payload).encode("utf-8")
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        return False
+    def read(self):
+        return self.payload
+    def getcode(self):
+        return self.status
+
+
+def _raise(error):
+    raise error
 
 
 def _date(value):

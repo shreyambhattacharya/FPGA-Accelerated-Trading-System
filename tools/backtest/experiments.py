@@ -80,7 +80,7 @@ def run_factor_ablation(events, base_config: BacktestConfig, factors=("momentum"
         excluded = set() if factor is None else {factor}
         factory = None if factor is None else lambda n, cfg, excluded=excluded: ResearchSignalPolicy(n, cfg, excluded)
         run = BacktestEngine(base_config, strategy_factory=factory).run(events)
-        results.append({"excluded_factor": factor or "none", "summary": run.summary})
+        results.append({"excluded_factor": factor or "none", "summary": run.summary, "forward_summary": run.forward_summary})
     return results
 
 
@@ -108,10 +108,12 @@ def run_parameter_grid(events, base_config: BacktestConfig, grid: dict[str, list
 
 def run_baselines(events, base_config: BacktestConfig, *, seed=7):
     """Return no-trade, momentum-only, VWAP-only, and seeded random baselines."""
-    results = [{"name": "no_trade", "summary": BacktestEngine(replace(base_config, strategy=replace(base_config.strategy, strategy_enable=False))).run(events).summary}]
+    no_trade = BacktestEngine(replace(base_config, strategy=replace(base_config.strategy, strategy_enable=False))).run(events)
+    results = [{"name": "no_trade", "summary": no_trade.summary, "forward_summary": no_trade.forward_summary}]
     for name, excluded in (("momentum_only", {"vwap_delta", "imbalance", "spread", "volume"}), ("vwap_only", {"momentum", "imbalance", "spread", "volume"})):
         policy = lambda n, cfg, excluded=excluded: ResearchSignalPolicy(n, cfg, excluded)
-        results.append({"name": name, "summary": BacktestEngine(base_config, strategy_factory=policy).run(events).summary})
+        run = BacktestEngine(base_config, strategy_factory=policy).run(events)
+        results.append({"name": name, "summary": run.summary, "forward_summary": run.forward_summary})
     rng = random.Random(seed)
     # A seeded random baseline emits candidate-shaped events at the same
     # feature timestamps. It is intentionally independent of future prices.
@@ -123,7 +125,8 @@ def run_baselines(events, base_config: BacktestConfig, *, seed=7):
         def evaluate(self, feature):
             action = rng.choice((0, 1, 2)) if self.config.strategy_enable else 0
             return type("RandomSignal", (), {"symbol_id": feature.symbol_id, "sequence": feature.sequence, "action": action, "score": 0, "reason_bits": 0})()
-    results.append({"name": "random_seeded", "summary": BacktestEngine(base_config, strategy_factory=lambda n, cfg: RandomPolicy(n, cfg)).run(events).summary})
+    random_run = BacktestEngine(base_config, strategy_factory=lambda n, cfg: RandomPolicy(n, cfg)).run(events)
+    results.append({"name": "random_seeded", "summary": random_run.summary, "forward_summary": random_run.forward_summary})
     return results
 
 

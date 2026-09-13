@@ -30,11 +30,12 @@ dataset -> canonical NormalizedEvent -> MarketModel -> StrategyModel
 ```
 
 This milestone adds deterministic session filtering, data-quality reporting,
-Alpaca parser/download scaffolding (credentials only through environment
-variables), latency/slippage/commission-aware hypothetical fills, portfolio
-accounting, forward returns, research baselines/sweeps, and reproducible
-JSON/Markdown/CSV outputs. It does not include real downloaded data, broker
-orders, or live trading.
+an Alpaca historical downloader (credentials only through `.env.local` or
+process environment), latency/slippage/commission-aware hypothetical fills,
+portfolio accounting, forward returns, research baselines/sweeps, and
+reproducible JSON/Markdown/CSV outputs. Real raw and normalized datasets are
+never committed; the ignored local study directories are reproducible from
+the downloader. There are still no broker orders or live-trading paths.
 
 The packet format is fixed at 32 bytes, uses big-endian integer fields, and ends with CRC-8/ATM. The RTL is written in synthesizable SystemVerilog. The packet FIFOs are Gray-pointer asynchronous FIFOs with two-flop pointer synchronizers; SPI framing remains in the external SPI clock domain while validation, market-state updates, and diagnostic response generation run on the Tang Nano's onboard 27 MHz clock. The market engine uses integer micro-dollar prices, per-symbol sequence checks, quote/trade isolation, spread, midpoint, momentum, rolling volume, imbalance, and VWAP accumulators. Its market path is a serialized, registered read/modify/write pipeline with one shared 64x32 multiplier and one shared sequential 101/64 divider; it does not replicate feature engines per symbol. It emits the actual VWAP quotient, Q1.15 imbalance, spread/momentum/midpoint-VWAP basis-point fields scaled by 100, and explicit validity flags. Per-symbol state is held in a packed state bank with logical reset tracking, while the rolling histories remain independent. The candidate-signal engine consumes those normalized fields, applies runtime thresholds and enables, emits a diagnostic `SIGNAL_NONE` or candidate record for every accepted feature, and never places an order. The host side is modern C++17 and uses Linux `spidev` when built and run on Raspberry Pi OS. A deterministic software transport, Python reference/differential model, and offline replay harness are included so protocol, market, and signal semantics can be exercised on a development PC without pretending that physical SPI was tested.
 
@@ -101,6 +102,25 @@ See [`docs/data_pipeline.md`](docs/data_pipeline.md) for the canonical schema
 and [`docs/backtesting.md`](docs/backtesting.md) for execution assumptions,
 metrics, splits, research baselines, and result files. The hand-check fixture
 is intentionally too small for statistical conclusions.
+
+### Run the first real historical sanity study
+
+With `.env.local` in the repository root containing `ALPACA_API_KEY` and
+`ALPACA_API_SECRET`, run:
+
+```powershell
+python -m tools.backtest.real_study --repo-root (Get-Location).Path
+```
+
+The command loads only those two variables into its child process, prints
+presence booleans only, downloads Alpaca IEX quotes and trades for SPY, QQQ,
+NVDA, and AMD over five complete regular sessions, and writes ignored raw,
+normalized, manifest, and report paths below `data/` and
+`backtest_results/`. It does not import an account/order API or submit orders.
+The exact baseline uses the full canonical stream; baseline, ablation,
+execution-matrix, symbol-split, and threshold probes are deterministic
+event-stride sensitivity studies whose sampling metadata is recorded in each
+variant summary.
 
 For physical Pi use, follow [`docs/hardware_bringup.md`](docs/hardware_bringup.md), then run the same program with `--device /dev/spidev0.0`. The program prints `mode=REAL_HARDWARE` only on the spidev path; `--sim` is explicitly labeled `mode=SIMULATION`. Its throughput is an end-to-end exchange rate over the measured run, not a claim about FPGA service time.
 

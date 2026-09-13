@@ -131,6 +131,9 @@ class ExecutionSimulator:
             candidate_reason_bits=order.candidate_reason_bits,
             candidate_score=order.candidate_score,
             exit_reason=order.exit_reason,
+            eligible_timestamp_ns=order.eligible_timestamp_ns,
+            candidate_sequence=order.candidate_sequence,
+            candidate_feature=order.candidate_feature,
         )
 
     @staticmethod

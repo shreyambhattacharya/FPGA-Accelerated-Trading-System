@@ -45,6 +45,7 @@ def compute_metrics(trades, equity_curve, *, starting_cash: float, timezone_name
     total_net = sum(trade.net_pnl for trade in trades)
     total_gross = sum(trade.gross_pnl for trade in trades)
     total_costs = sum(trade.costs for trade in trades)
+    total_slippage = sum(trade.slippage_cost for trade in trades)
     winners = [trade.net_pnl for trade in trades if trade.net_pnl > 0]
     losers = [trade.net_pnl for trade in trades if trade.net_pnl < 0]
     daily = daily_pnl_series(equity_curve, timezone_name=timezone_name, starting_equity=starting_cash)
@@ -80,6 +81,8 @@ def compute_metrics(trades, equity_curve, *, starting_cash: float, timezone_name
         "total_net_pnl": total_net,
         "total_gross_pnl": total_gross,
         "total_costs": total_costs,
+        "total_commission": total_costs,
+        "total_slippage_cost": total_slippage,
         "trade_count": len(trades),
         "long_trades": sum(trade.direction == "long" for trade in trades),
         "short_trades": sum(trade.direction == "short" for trade in trades),

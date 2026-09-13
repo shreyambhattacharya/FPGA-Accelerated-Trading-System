@@ -8,3 +8,9 @@ host/*.exe
 *.vcd
 __pycache__/
 backtest_results/
+
+data/raw/
+data/normalized/
+data/manifests/
+
+.env.local

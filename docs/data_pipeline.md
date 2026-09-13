@@ -29,17 +29,24 @@ model and may parse JSON, but every adapter must emit the canonical record.
 
 The backtest requires quote and trade events, not OHLCV bars. A bar contains no
 executable bid/ask queue state and cannot support the fill assumptions in
-`execution_simulator.py`. Alpaca support in `tools/backtest/providers.py` is
-parser/downloader scaffolding: it maps historical quote snapshots to a
-deterministic bid event followed by an ask event and maps trades to trade
-events. No credentials are checked in, and no real dataset is included or
-downloaded by tests.
+`execution_simulator.py`. Alpaca support in `tools/backtest/providers.py`
+downloads historical `quotes` and `trades` pages from the IEX feed with
+bounded transient retries, pagination-token validation, atomic `.part`
+replacement, response counts, and SHA-256 metadata. A quote snapshot becomes
+a deterministic bid event followed by an ask event; a trade becomes one trade
+event. Alpaca quote sizes are round lots, so the normalizer converts `bs`/`as`
+to shares by multiplying by 100. Trade `s` is already shares and is retained
+unchanged. Historical trade aggressor side is not inferred from the response;
+the canonical side is a documented default. No credentials are checked in,
+and no real dataset is included in Git or downloaded by tests.
 
-If a user explicitly downloads data, the adapter reads `ALPACA_API_KEY` and
-`ALPACA_API_SECRET` (or receives them in memory), writes only to the requested
-output path, and supports `kind=quotes` or `kind=trades`. Downloading does not
-make the resulting data a validated FPGA-compatible feed; run the quality-only
-CLI first.
+The real-study runner reads `.env.local` locally and places only
+`ALPACA_API_KEY` and `ALPACA_API_SECRET` in the downloader child process. It
+prints booleans rather than values. Each raw file has a sidecar manifest and
+is written atomically; raw and canonical outputs are ignored by `.gitignore`.
+Downloading does not make the resulting data a validated FPGA-compatible
+feed; the study performs canonical count, ordering, quote-state, gap, zero,
+duplicate, and integrity checks before reporting results.
 
 ## Ordering and sequences
 

@@ -44,7 +44,7 @@ class PortfolioConfig:
 class PortfolioSimulator:
     """Maintain one flat/long/short position per symbol and cash accounting."""
 
-    def __init__(self, config: PortfolioConfig | None = None) -> None:
+    def __init__(self, config: PortfolioConfig | None = None, *, record_candidate_logs: bool = True) -> None:
         self.config = config or PortfolioConfig()
         self.cash = self.config.starting_cash
         self.positions: dict[int, Position] = {}
@@ -53,8 +53,11 @@ class PortfolioSimulator:
         self.completed_trades: list[CompletedTrade] = []
         self.candidate_logs: list[CandidateLog] = []
         self.equity_curve: list[EquityPoint] = []
+        self.record_candidate_logs = record_candidate_logs
         self.unrealized_pnl = 0.0
         self.realized_pnl = 0.0
+        self._high_water_equity = None
+        self._maximum_drawdown = 0.0
 
     def consider_candidate(
         self,
@@ -204,8 +207,12 @@ class PortfolioSimulator:
                     entry_candidate_timestamp_ns=fill.candidate_timestamp_ns,
                     entry_reason_bits=fill.candidate_reason_bits,
                     entry_score=fill.candidate_score,
-                    entry_feature=None,
+                    entry_feature=fill.candidate_feature,
                     entry_costs=fill.commission,
+                    entry_sequence=fill.candidate_sequence,
+                    entry_eligible_timestamp_ns=fill.eligible_timestamp_ns,
+                    entry_side=fill.side,
+                    entry_reference_price=fill.reference_price,
                 )
                 continue
             position = self.positions.pop(symbol_id, None)
@@ -219,6 +226,10 @@ class PortfolioSimulator:
                 gross = (position.entry_price - fill.fill_price) * position.quantity / 1_000_000.0
             costs = position.entry_costs + fill.commission
             net = gross - costs
+            slippage_cost = (
+                abs(position.entry_price - position.entry_reference_price) * position.quantity
+                + abs(fill.fill_price - fill.reference_price) * fill.quantity
+            ) / 1_000_000.0
             trade = CompletedTrade(
                 symbol_id=symbol_id,
                 direction=position.direction,
@@ -238,11 +249,17 @@ class PortfolioSimulator:
                 entry_reason_bits=position.entry_reason_bits,
                 entry_score=position.entry_score,
                 entry_feature=position.entry_feature,
+                entry_sequence=position.entry_sequence,
+                entry_eligible_timestamp_ns=position.entry_eligible_timestamp_ns,
+                entry_side=position.entry_side,
+                entry_reference_price=position.entry_reference_price,
+                slippage_cost=slippage_cost,
+                commission=costs,
             )
             self.completed_trades.append(trade)
             self.realized_pnl += net
 
-    def mark_to_market(self, timestamp_ns: int, feature) -> EquityPoint:
+    def mark_to_market(self, timestamp_ns: int, feature, *, record: bool = True) -> EquityPoint:
         unrealized = 0.0
         gross = 0.0
         net = 0.0
@@ -272,7 +289,13 @@ class PortfolioSimulator:
             net_exposure=net,
             open_positions=len(self.positions),
         )
-        self.equity_curve.append(point)
+        if self._high_water_equity is None:
+            self._high_water_equity = point.equity
+        else:
+            self._high_water_equity = max(self._high_water_equity, point.equity)
+        self._maximum_drawdown = min(self._maximum_drawdown, point.equity - self._high_water_equity)
+        if record:
+            self.equity_curve.append(point)
         return point
 
     def _entry_order(self, candidate: CandidateSignal, direction: str, execution: ExecutionSimulator):
@@ -309,6 +332,8 @@ class PortfolioSimulator:
             candidate_timestamp_ns=candidate.timestamp_ns,
             candidate_reason_bits=candidate.reason_bits,
             candidate_score=candidate.score,
+            candidate_sequence=candidate.sequence,
+            candidate_feature=candidate.feature,
         )
         return order_id, order
 
@@ -330,6 +355,8 @@ class PortfolioSimulator:
             candidate_timestamp_ns=candidate.timestamp_ns if candidate else position.entry_candidate_timestamp_ns,
             candidate_reason_bits=candidate.reason_bits if candidate else 0,
             candidate_score=candidate.score if candidate else 0,
+            candidate_sequence=candidate.sequence if candidate else 0,
+            candidate_feature=candidate.feature if candidate else None,
             execution=execution,
         )
         self.pending_symbols.add(position.symbol_id)
@@ -339,7 +366,7 @@ class PortfolioSimulator:
         return fills, order_id
 
     @staticmethod
-    def _exit_order(position, timestamp_ns, *, reason, candidate_timestamp_ns, candidate_reason_bits, candidate_score, execution):
+    def _exit_order(position, timestamp_ns, *, reason, candidate_timestamp_ns, candidate_reason_bits, candidate_score, candidate_sequence=0, candidate_feature=None, execution):
         order_id = execution.new_order_id()
         return order_id, OrderRequest(
             order_id=order_id,
@@ -354,6 +381,8 @@ class PortfolioSimulator:
             candidate_reason_bits=candidate_reason_bits,
             candidate_score=candidate_score,
             exit_reason=reason,
+            candidate_sequence=candidate_sequence,
+            candidate_feature=candidate_feature,
         )
 
     def _risk_reason(self, timestamp_ns, feature, position, *, is_quote):
@@ -390,6 +419,8 @@ class PortfolioSimulator:
         return sum(p.entry_price * p.quantity / 1_000_000.0 for p in self.positions.values())
 
     def _log_candidate(self, candidate, status, order_id):
+        if not self.record_candidate_logs:
+            return
         self.candidate_logs.append(
             CandidateLog(
                 timestamp_ns=candidate.timestamp_ns,

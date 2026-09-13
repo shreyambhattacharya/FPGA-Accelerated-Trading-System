@@ -32,6 +32,8 @@ class OrderRequest:
     candidate_reason_bits: int = 0
     candidate_score: int = 0
     exit_reason: str = ""
+    candidate_sequence: int = 0
+    candidate_feature: Any = None
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,9 @@ class Fill:
     candidate_reason_bits: int = 0
     candidate_score: int = 0
     exit_reason: str = ""
+    eligible_timestamp_ns: int = 0
+    candidate_sequence: int = 0
+    candidate_feature: Any = None
 
 
 @dataclass
@@ -65,6 +70,10 @@ class Position:
     entry_score: int
     entry_feature: Any
     entry_costs: float
+    entry_sequence: int = 0
+    entry_eligible_timestamp_ns: int = 0
+    entry_side: str = ""
+    entry_reference_price: int = 0
 
 
 @dataclass(frozen=True)
@@ -87,6 +96,12 @@ class CompletedTrade:
     entry_reason_bits: int
     entry_score: int
     entry_feature: Any
+    entry_sequence: int = 0
+    entry_eligible_timestamp_ns: int = 0
+    entry_side: str = ""
+    entry_reference_price: int = 0
+    slippage_cost: float = 0.0
+    commission: float = 0.0
 
 
 @dataclass(frozen=True)

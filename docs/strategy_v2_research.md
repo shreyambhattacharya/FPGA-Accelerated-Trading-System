@@ -131,6 +131,15 @@ projected above the requested 30-minute gate, so it was stopped at 300 s and
 `processed_events`, `total_events`, `percent_complete`, `elapsed_time`,
 `processing_rate_events_per_second`, and `estimated_remaining_time`.
 
+The prior real-study workflow scheduled 58 full 55.7M-event source passes:
+1 baseline replay, 1 combined diagnostic pass, 4 baseline-comparison runs,
+6 factor-ablation runs, 16 parameter-sanity runs, 2 symbol-split runs, and
+28 latency/slippage runs. This resumed V2 run performed 0 new full source
+passes because both validated caches were already present. A cold V2 cache
+build requires two isolated source passes to materialize FAST and MEDIUM;
+all subsequent V2 research runs on the fixed-width subsets rather than
+replaying the 55.7M-event canonical stream.
+
 No full 55.7-million-event V2 validation was run. The MEDIUM result is a
 software research proxy and is not a production portfolio validation. A
 future exact portfolio pass should be run only after a separately profiled

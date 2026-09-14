@@ -12,6 +12,11 @@ std::uint64_t steady_time_ns() {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
 }
 
+std::uint64_t system_time_ns() {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+}
+
 void LatencyTracker::record(LatencySample sample) {
     samples_.push_back(std::move(sample));
 }

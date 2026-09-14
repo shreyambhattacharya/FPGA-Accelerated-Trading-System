@@ -45,5 +45,6 @@ private:
 };
 
 std::uint64_t steady_time_ns();
+std::uint64_t system_time_ns();
 
 } // namespace trading::host

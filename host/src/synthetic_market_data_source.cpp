@@ -33,4 +33,11 @@ bool SyntheticMarketDataSource::next(MarketEvent& event) {
     return true;
 }
 
+MarketDataTelemetry SyntheticMarketDataSource::telemetry() const {
+    MarketDataTelemetry telemetry;
+    telemetry.source = "SYNTHETIC";
+    telemetry.events_normalized = index_;
+    return telemetry;
+}
+
 } // namespace trading

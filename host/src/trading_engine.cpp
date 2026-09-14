@@ -49,6 +49,11 @@ EngineStats TradingEngine::run() {
         }
         latency_tracker_.record({result.sequence, send_ns, receive_ns, result.success, result.error});
     }
+    stats.market_data = source_.telemetry();
+    if (stats.market_data.unknown_symbols > stats.unknown_symbols) {
+        stats.unknown_symbols = stats.market_data.unknown_symbols;
+    }
+    if (stats.last_error.empty()) stats.last_error = source_.last_error();
     return stats;
 }
 

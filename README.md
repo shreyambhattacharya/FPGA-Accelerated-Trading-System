@@ -30,11 +30,14 @@ Raspberry Pi host
   final risk, portfolio state, paper broker, fills, P&L
 ```
 
-The current host foundation is deterministic and PC-testable. It includes a
-normalized `MarketEvent`, a 32-slot `SymbolRegistry`, per-slot sequence
-management, a synthetic source, an FPGA packet client, and a
-`TradingEngine` simulation path. Real market-data networking, candidate-result
-egress, risk approval, and broker execution remain planned work.
+The current host runtime includes a provider-independent normalized
+`MarketEvent`, a 32-slot `SymbolRegistry`, per-slot sequence management, a
+synthetic source, an optional real-time Alpaca market-data WebSocket receiver,
+an FPGA packet client, and a `TradingEngine` simulation path. Networking is
+opt-in because Boost.Beast, OpenSSL, and nlohmann/json are external
+dependencies; the core protocol and synthetic tests remain dependency-free.
+Candidate-result egress, risk approval, and broker execution remain future
+work.
 
 The FPGA V1 candidate engine is a reference/demo strategy implementation. The
 strategy is intentionally replaceable. Historical validation rejected
@@ -103,9 +106,9 @@ credentials remain ignored.
 2. FPGA market-state and normalized feature pipeline — complete
 3. Configurable FPGA candidate-signal engine — complete
 4. Historical replay / real-data validation infrastructure — complete
-5. C++ real-time host-engine foundation — current
-6. Real-time market-data WebSocket receiver
-7. Pi-to-FPGA normalized event path
+5. C++ real-time host-engine foundation — complete
+6. Real-time market-data WebSocket receiver — complete
+7. Pi-to-FPGA normalized event path — simulation path complete; physical validation next
 8. FPGA-to-Pi candidate/result packet path
 9. Symbol-slot management and dynamic remapping
 10. Host risk and portfolio engine
@@ -114,6 +117,6 @@ credentials remain ignored.
 13. End-to-end latency, fault, and recovery testing
 14. Continuous paper-trading system
 
-The next engineering milestone is real-time market-data networking. No step
-should imply physical SPI completion, live trading, or a profitable strategy
-without a measured implementation and explicit validation.
+The next engineering milestone is the FPGA-to-Pi candidate/result packet path.
+No step implies physical SPI completion, live trading, or a profitable
+strategy without a measured implementation and explicit validation.

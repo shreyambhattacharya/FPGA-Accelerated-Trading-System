@@ -12,6 +12,7 @@ public:
 
     bool next(MarketEvent& event) override;
     std::size_t emitted() const { return index_; }
+    MarketDataTelemetry telemetry() const override;
 
 private:
     std::size_t event_count_;

@@ -105,8 +105,11 @@ externally defined candidate/result packet path from RTL to the host. The host
 therefore exposes a future-facing control/client boundary but does not claim
 to receive candidate decisions.
 
-The next engineering milestone is real-time market-data networking. Later
-milestones can add a WebSocket adapter, a deliberately specified FPGA result
-packet/RTL path, host final risk and portfolio ownership, paper-broker
-integration, and physical Pi-to-Tang SPI validation. None is implemented by
-this foundation milestone.
+The real-time Alpaca market-data adapter is now available behind the optional
+`FPGA_TRADER_ENABLE_NETWORKING` CMake option. Its lifecycle, normalization,
+bounded queue, telemetry, credential policy, and dependency requirements are
+documented in [`docs/market_data_streaming.md`](market_data_streaming.md).
+Later milestones can add a deliberately specified FPGA result packet/RTL path,
+host final risk and portfolio ownership, paper-broker integration, and
+physical Pi-to-Tang SPI validation. None of those are implemented by the
+market-data milestone.

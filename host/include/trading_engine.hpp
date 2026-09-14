@@ -33,6 +33,7 @@ struct EngineStats {
     std::uint64_t sequence_assignments = 0;
     std::uint64_t start_timestamp_ns = 0;
     std::uint64_t last_event_timestamp_ns = 0;
+    MarketDataTelemetry market_data;
     std::string last_error;
 };
 

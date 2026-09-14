@@ -82,6 +82,15 @@ TransferResult SoftwareLoopbackTransport::transfer(const protocol::PacketBytes& 
     result.ok = true;
     result.received.fill(0);
 
+    // Market events are one-way submissions in the current protocol. Keep
+    // them out of the three-transfer diagnostic state machine so a synthetic
+    // stream can exercise the real host event path deterministically.
+    if (transmit[0] == protocol::kSyncVersion &&
+        (transmit[1] == static_cast<std::uint8_t>(protocol::MessageType::MarketQuote) ||
+         transmit[1] == static_cast<std::uint8_t>(protocol::MessageType::MarketTrade))) {
+        return result;
+    }
+
     switch (phase_) {
     case Phase::Request: {
         const auto request = protocol::Packet::decode_unchecked(transmit);
@@ -90,7 +99,8 @@ TransferResult SoftwareLoopbackTransport::transfer(const protocol::PacketBytes& 
             status = protocol::StatusCode::BadSync;
         } else if (transmit[31] != protocol::crc8(transmit)) {
             status = protocol::StatusCode::BadChecksum;
-        } else if (request.message_type != protocol::MessageType::Loopback) {
+        } else if (request.message_type != protocol::MessageType::Loopback &&
+                   request.message_type != protocol::MessageType::Control) {
             status = protocol::StatusCode::BadType;
         }
         pending_response_ = protocol::make_status_response(request, status);

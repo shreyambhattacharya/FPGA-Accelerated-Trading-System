@@ -229,3 +229,34 @@ The all-zero 32-byte turnaround and response writes are transport filler used to
 | GND | GND | reference |
 
 The onboard 27 MHz oscillator is constrained as `clk` on FPGA pin 4. LED0–LED5 use FPGA pins 15–20 and are active-low; LED0 is a heartbeat, LED1 is packet activity, and LED2 is a sticky packet/protocol error. The LCD/FPC connector must remain disconnected for this external SPI wiring. Use the Pi's normal 3.3 V GPIO SPI signals and a common ground; do not connect Pi 5 V or Pi 3.3 V to the USB-powered Tang Nano. See `docs/hardware_bringup.md` and `fpga/constraints/tang_nano_20k.cst` for the checked-in bring-up assumptions.
+
+## Host runtime orientation
+
+The current host foundation is implemented in C++17 and is PC-testable in
+simulation. `MarketDataSource` supplies normalized `MarketEvent` values;
+`SymbolRegistry` maps external tickers to up to 32 FPGA slots;
+`TradingEngine` validates symbols, assigns per-slot sequences, records host
+telemetry, and sends events through `FpgaClient`. `FpgaClient` reuses the
+existing `SpiTransport` abstraction and exact 32-byte protocol/CRC helpers.
+The deterministic synthetic source exercises quote expansion and trades
+without a network connection.
+
+Implemented host foundation:
+
+- normalized integer market events and deterministic decimal-to-micro-dollar
+  conversion;
+- symbol lookup, assignment, enable/disable, generation tracking, and safe
+  software remap states;
+- per-slot sequence ownership with explicit overflow errors;
+- simulation transport and end-to-end `TradingEngine --sim` flow.
+
+Still planned:
+
+- Alpaca or other real-time WebSocket networking;
+- an externally defined FPGA candidate/result packet and RTL egress path;
+- host final risk, portfolio, paper-broker, and account synchronization;
+- physical Pi-to-Tang SPI validation and end-to-end fault/recovery testing.
+
+The candidate signal is currently internal to the FPGA pipeline. The host does
+not pretend to receive candidate decisions until a result packet protocol and
+RTL path are deliberately added.

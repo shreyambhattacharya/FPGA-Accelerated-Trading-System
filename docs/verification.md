@@ -131,19 +131,7 @@ physical hardware validation. Run it with:
 python -m unittest discover -s tools/backtest/tests -p "test_*.py" -v
 ```
 
-The current backtest suite contains 14 tests, including bounded Alpaca
-pagination/retry/atomic-download checks, exact quote/trade unit conversion,
-canonical binary handling, stream arrival/interarrival/FIFO analysis, and
-the hand-check replay plus resumable combined timestamp diagnostics. The first
-real-data study is run separately with:
-
-```powershell
-python -m tools.backtest.real_study --repo-root (Get-Location).Path
-```
-
-That run loads credentials only from the ignored root `.env.local`, reports
-presence booleans only, and keeps raw/normalized/results data ignored. Its
-baseline uses the existing reference-model semantics; no RTL or
-`StrategyModel` behavior is changed by the study. The generated report must
-retain the IEX coverage limitation, paper-only execution disclaimer, and
-bounded-variant sampling metadata.
+The backtest suite covers bounded provider pagination/retry/atomic-download
+checks, exact quote/trade unit conversion, canonical binary handling, stream
+arrival/interarrival/FIFO analysis, and the hand-check replay. The reference
+model and generic replay path do not claim physical hardware validation.

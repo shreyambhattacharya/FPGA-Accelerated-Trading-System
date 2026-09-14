@@ -30,7 +30,7 @@ Run a replay with:
 ```powershell
 python -m tools.backtest.run_backtest `
   --data tools/backtest/fixtures/hand_check.csv `
-  --config configs/backtest/base.json `
+  --config configs/backtest/v1_reference.json `
   --output build/backtest_run
 ```
 
@@ -98,41 +98,6 @@ never use the test segment for selection. Date-based train/validation/test
 splits and walk-forward windows are provided, along with no-trade,
 momentum-only, VWAP-only, and seeded random baselines. Sensitivity and symbol
 split robustness should be reported alongside any selected configuration.
-
-## First real-data sanity study
-
-`python -m tools.backtest.real_study --repo-root (Get-Location).Path` runs the
-first real historical study with Alpaca IEX Level-1 data for SPY, QQQ, NVDA,
-and AMD over five complete regular sessions: 2026-09-01 through 2026-09-04
-and 2026-09-08. It produces a dataset manifest, download summary, event-rate
-and interarrival distributions, a conservative serialized FIFO-capacity
-simulation, feature and candidate distributions, forward returns, paper
-execution metrics, latency/slippage results, factor ablations, threshold
-sanity results, and quality findings. The manifest records raw counts, bytes,
-canonical counts, normalizer version, and canonical SHA-256.
-
-Timestamp-only diagnostics use one sequential pass over the canonical binary.
-That pass combines aggregate/per-symbol counts, 1 s/100 ms/10 ms/1 ms rate
-buckets, combined and per-symbol inter-arrivals, and all FIFO-depth
-simulations. Counts, extrema, means, maximum rates, queue occupancy, and
-overflow counts remain exact; percentile fields use a deterministic bounded
-systematic sample and are labeled in the JSON artifacts. Progress reports
-include processed and total events, percent complete, elapsed time, throughput,
-and estimated remaining time. The pass checkpoints to `analysis_state.json`
-and `diagnostics_checkpoint.pkl`, so an interrupted run resumes from its last
-checkpoint. A valid manifest/hash reuses the existing canonical binary and
-completed artifacts; it does not redownload or renormalize the dataset.
-
-The full baseline replays every canonical event through the existing
-`MarketModel` and `StrategyModel`. To keep exploratory sensitivity work
-bounded on multi-million-event captures, variant summaries use a fixed event
-stride over the complete date/symbol span; the stride and `full_span_retained`
-flag are recorded in each variant summary. The canonical binary reader seeks
-over skipped packets, so these probes do not decode the skipped events as
-hidden full-stream passes. These probes are for scale and data-quality sanity
-only and must not be treated as optimized out-of-sample results. IEX is one
-venue rather than consolidated SIP coverage, and five
-sessions are not evidence of durable profitability.
 
 ## Reproducibility and limitations
 

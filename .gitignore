@@ -8,6 +8,8 @@ host/*.exe
 *.vcd
 __pycache__/
 backtest_results/
+build/
+.vscode/
 
 data/raw/
 data/normalized/

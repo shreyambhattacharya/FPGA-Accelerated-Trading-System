@@ -118,11 +118,7 @@ about consolidated-market queue position or executable cross-venue alpha.
 
 Final classification for this milestone: **MICROSTRUCTURE INFORMATION WEAK**.
 
-If future work is authorized, the only source families worth rechecking are:
-
-1. quote/trade activity and spread transitions, with richer venue coverage;
-2. top-of-book OFI and replenishment with deeper book levels;
-3. trade flow and lead-lag using consolidated timestamps.
-
-These are research directions only. They are not Strategy V4 recommendations
-and were not combined into a trading system here.
+If future work is authorized, the one richer-data direction is a consolidated
+NBBO/SIP plus multi-level depth/trade feed with venue timestamps. This is a
+data-quality direction only, not a Strategy V4 recommendation; the signals
+were not combined into a trading system here.
